@@ -9,13 +9,14 @@ from aiogram.dispatcher.filters import Command
 from openpyxl import Workbook, load_workbook
 
 # --- Константы ---
-ADMIN_ID = 123456789  # ← замени на свой Telegram user_id
+ADMIN_ID = 123456789  # Замените на свой Telegram user_id
 EXCEL_FILE = "shift_log.xlsx"
 TZ = pytz.timezone("Europe/Moscow")
 SHIFT_START = time(8, 0)
 SHIFT_END = time(17, 30)
 LATE_START = time(8, 10)
 LATE_END = time(17, 40)
+LATEST_STOP = time(22, 0)
 
 # --- Инициализация бота ---
 TOKEN = os.getenv("BOT_TOKEN")
@@ -33,7 +34,7 @@ if not os.path.exists(EXCEL_FILE):
     wb.save(EXCEL_FILE)
 
 
-# --- Функция логирования в Excel ---
+# --- Логирование смены ---
 def log_shift(user_name, date, start=None, start_reason="", end=None, end_reason=""):
     wb = load_workbook(EXCEL_FILE)
     ws = wb.active
@@ -41,13 +42,18 @@ def log_shift(user_name, date, start=None, start_reason="", end=None, end_reason
     wb.save(EXCEL_FILE)
 
 
-# --- Обработка начала смены ---
+# --- Начало смены ---
 @dp.message_handler(commands=["start", "начал", "начать_смену"])
 async def start_shift(message: Message):
     now = datetime.now(TZ)
     user_id = message.from_user.id
     user_name = message.from_user.full_name
     date_str = now.strftime("%Y-%m-%d")
+
+    # Блокировка внерабочего времени (до 07:00 и после 17:30)
+    if now.time() < time(7, 0) or now.time() > SHIFT_END:
+        await message.answer("Сейчас нерабочее время. Начать смену можно с 07:00 до 17:30.")
+        return
 
     user_shift_data[user_id] = {"start": now, "start_reason": ""}
 
@@ -64,13 +70,18 @@ async def start_shift(message: Message):
             await m.answer("Спасибо! Желаю продуктивного рабочего дня!")
 
 
-# --- Обработка окончания смены ---
+# --- Окончание смены ---
 @dp.message_handler(commands=["stop", "закончил", "закончить_смену"])
 async def stop_shift(message: Message):
     now = datetime.now(TZ)
     user_id = message.from_user.id
     user_name = message.from_user.full_name
     date_str = now.strftime("%Y-%m-%d")
+
+    # Блокировка завершения смены позднее 22:00
+    if now.time() > LATEST_STOP:
+        await message.answer("Сейчас слишком поздно. Завершить смену можно до 22:00.")
+        return
 
     shift = user_shift_data.get(user_id, {})
     shift_start = shift.get("start")
@@ -107,7 +118,7 @@ async def stop_shift(message: Message):
             await m.answer("Спасибо! Желаю хорошего отдыха!")
 
 
-# --- Отправка отчета ---
+# --- Отчет ---
 @dp.message_handler(commands=["отчет"])
 async def send_report(message: Message):
     if message.from_user.id == ADMIN_ID:
@@ -120,8 +131,8 @@ async def send_report(message: Message):
 async def scheduler():
     while True:
         now = datetime.now(TZ)
-        if now.weekday() < 5:  # Пн–Пт
-            current_time = now.time().strftime("%H:%M")
+        if now.weekday() < 5:
+            current_time = now.strftime("%H:%M")
             if current_time == SHIFT_START.strftime("%H:%M"):
                 await bot.send_message(ADMIN_ID, "Доброе утро! Вы начали смену? Не забудьте написать 'начал'.")
             elif current_time == SHIFT_END.strftime("%H:%M"):
