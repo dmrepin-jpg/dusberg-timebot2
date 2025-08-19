@@ -7,7 +7,6 @@ from aiogram.types import Message
 from aiogram.utils import executor
 from aiogram.dispatcher.filters import Command
 from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter
 
 # Константы
 ADMIN_ID = 123456789  # Замените на ваш Telegram user_id
@@ -114,15 +113,16 @@ async def scheduler():
     while True:
         now = datetime.now(TZ)
         if now.weekday() < 5:
-            if now.time().strftime("%H:%M") == SHIFT_START.strftime("%H:%M"):
+            if now.hour == SHIFT_START.hour and now.minute == SHIFT_START.minute:
                 await bot.send_message(ADMIN_ID, "Доброе утро! Вы начали смену? Не забудьте написать 'начал'.")
-            elif now.time().strftime("%H:%M") == SHIFT_END.strftime("%H:%M"):
+            elif now.hour == SHIFT_END.hour and now.minute == SHIFT_END.minute:
                 await bot.send_message(ADMIN_ID, "Рабочий день окончен. Не забудьте написать 'закончил'.")
         await asyncio.sleep(60)
 
 
+async def on_startup(dp):
+    asyncio.create_task(scheduler())
+
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, timeout=30, allowed_updates=["message"])
-    loop = asyncio.get_event_loop()
-    loop.create_task(scheduler())
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, on_startup=on_startup, skip_updates=True, timeout=30, allowed_updates=["message"])
