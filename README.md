@@ -1,1 +1,3 @@
-# dusberg-timebot2
+# Telegram Shift Bot
+
+Бот для фиксации начала и конца смены.
