@@ -78,8 +78,7 @@ DEFAULT_EMPLOYEES = {
 }
 EMPLOYEES: Dict[int, Dict[str, Any]] = {}
 
-# ожидаем причину (по пользователю)
-# "start_early"|"start_late"|"end_early"|"end_late"
+# ожидаем причину (по пользователю) — "start_early"|"start_late"|"end_early"|"end_late"
 pending_reason: Dict[int, str] = {}
 
 # ================== УТИЛИТЫ ==================
@@ -267,12 +266,19 @@ async def owner_list(message: Message):
     if message.from_user.id != OWNER_ID: return
     if not EMPLOYEES:
         await message.answer("Справочник пуст.", reply_markup=owner_menu_kb); return
-    lines = []
-    for uid, meta in sorted(EMPLOYEES.items(), key=lambda kv: kv[0]):
+
+    # сортировка по ФИО (name), затем по id для стабильности
+    items = sorted(EMPLOYEES.items(), key=lambda kv: (kv[1].get("name","").lower(), kv[0]))
+
+    chunk = []
+    for uid, meta in items:
         status = "🟢 активен" if meta.get("active", True) else "🔴 неактивен"
-        lines.append(f"{uid}: {meta.get('name','')} — {status}")
-    for i in range(0, len(lines), 50):
-        await message.answer("\n".join(lines[i:i+50]), reply_markup=owner_menu_kb)
+        chunk.append(f"{uid}: {meta.get('name','')} — {status}")
+        if len(chunk) == 50:
+            await message.answer("\n".join(chunk), reply_markup=owner_menu_kb)
+            chunk = []
+    if chunk:
+        await message.answer("\n".join(chunk), reply_markup=owner_menu_kb)
 
 @router.message(F.text == "❇️ Добавить сотрудника")
 async def owner_add_start(message: Message, state: FSMContext):
@@ -477,8 +483,12 @@ async def handle_shift_status(message: Message):
         await message.answer("Сегодня смен нет.", reply_markup=kb(message.from_user.id))
         return
 
+    # список uid сегодняшних отметившихся, отсортированный по ФИО
+    sorted_uids = sorted(day_data.keys(), key=lambda u: fio(u).lower())
+
     lines = []
-    for uid, data in day_data.items():
+    for uid in sorted_uids:
+        data = day_data[uid]
         s = fmt_hm(data.get("start"))
         e = fmt_hm(data.get("end"))
         who = fio(uid)
@@ -511,8 +521,20 @@ def daterange_inclusive(d1: datetime.date, d2: datetime.date) -> Iterable[dateti
         cur = cur + datetime.timedelta(days=step)
 
 def parse_date(s: str) -> datetime.date | None:
+    s = (s or "").strip()
+    # ISO: YYYY-MM-DD
     try:
         y, m, d = s.split("-")
+        return datetime.date(int(y), int(m), int(d))
+    except Exception:
+        pass
+    # RU: DD.MM.YY или DD.MM.YYYY
+    try:
+        d, m, y = s.split(".")
+        if len(y) == 2:
+            y = 2000 + int(y)  # 25 -> 2025
+        else:
+            y = int(y)
         return datetime.date(int(y), int(m), int(d))
     except Exception:
         return None
@@ -556,7 +578,8 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     ws_shifts.append([
         "Дата","Сотрудник","ID","Начало","Конец",
         "Раннее начало, мин","Позднее начало, мин","Раннее завершение, мин","Позднее завершение, мин",
-        "Длительность, мин","Длительность, ч","Выходной","Причина начала","Причина завершения","Комментарий"
+        "Длительность, мин","Длительность, ч","Выходной",
+        "Причина отклонения начала смены","Причина отклонения завершения смены","Комментарий"
     ])
     ws_daily.append([
         "Дата","Сотрудник","ID","Начало","Конец",
@@ -564,8 +587,9 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
         "Длительность, мин","Длительность, ч","Выходной"
     ])
 
+    # Сотрудники — по алфавиту
     ws_emps.append(["ID","Сотрудник","Статус"])
-    for uid, meta in sorted(EMPLOYEES.items()):
+    for uid, meta in sorted(EMPLOYEES.items(), key=lambda kv: (kv[1].get("name","").lower(), kv[0])):
         ws_emps.append([uid, meta.get("name",""), "активен" if meta.get("active", True) else "неактивен"])
 
     ws_params.append(["Параметр","Значение"])
@@ -577,13 +601,13 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     ws_params.append(["Период отчёта", f"{date_from.isoformat()} — {date_to.isoformat()}"])
     ws_params.append(["В отчёт включены все сотрудники, в том числе неактивные.", "Да"])
 
-    # Данные: по каждому дню включаем ВСЕХ сотрудников (активных и неактивных).
+    # Данные: по каждому дню включаем ВСЕХ сотрудников (сортировка по имени)
     for day in daterange_inclusive(date_from, date_to):
         key = day.isoformat()
         day_data = shifts_by_date.get(key, {})
         weekend = "Да" if is_weekend(day) else "Нет"
 
-        for uid, meta in sorted(EMPLOYEES.items()):
+        for uid, meta in sorted(EMPLOYEES.items(), key=lambda kv: (kv[1].get("name","").lower(), kv[0])):
             name = meta.get("name","")
             data = day_data.get(uid, None)
 
@@ -597,7 +621,6 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
                 end_reason   = data.get("end_reason") or ""
                 comment      = data.get("comment") or ""
             else:
-                # Пустая строка для отсутствующих отметок
                 start_str = end_str = "—"
                 early_start = late_start = early_end = late_end = 0
                 work_min = 0; work_hours = 0
@@ -643,13 +666,13 @@ class ReportStates(StatesGroup):
 @router.message(F.text.in_({"Отчет", "Отчет 📈"}))
 async def ask_report_period(message: Message, state: FSMContext):
     if not ensure_allowed(message): return
-    if not is_admin(message.from_user.id):
+    if not is_admin(message.from_user.id)):
         await message.answer("Нет доступа.", reply_markup=kb(message.from_user.id)); return
     await state.set_state(ReportStates.waiting_period)
     await message.answer(
         "Введите период дат (включительно):\n"
-        "• Один день: <code>2025-08-20</code>\n"
-        "• Диапазон: <code>2025-08-01 2025-08-20</code>\n"
+        "• Один день: <code>20.08.2025</code> или <code>20.08.25</code>\n"
+        "• Диапазон: <code>01.08.2025 20.08.2025</code> (или ISO: <code>2025-08-01 2025-08-20</code>)\n"
         "Для отмены: /cancel"
     )
 
@@ -673,7 +696,11 @@ async def handle_report_period(message: Message, state: FSMContext):
         d1 = d2 = None
 
     if not d1 or not d2:
-        await message.answer("Неверный формат. Пример: <code>2025-08-01 2025-08-20</code> или <code>2025-08-20</code>")
+        await message.answer(
+            "Неверный формат. Примеры:\n"
+            "• <code>20.08.2025</code> или <code>20.08.25</code>\n"
+            "• <code>01.08.2025 20.08.2025</code> или <code>2025-08-01 2025-08-20</code>"
+        )
         return
 
     if d2 < d1:
