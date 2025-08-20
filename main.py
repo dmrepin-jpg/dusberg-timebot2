@@ -666,8 +666,9 @@ class ReportStates(StatesGroup):
 @router.message(F.text.in_({"Отчет", "Отчет 📈"}))
 async def ask_report_period(message: Message, state: FSMContext):
     if not ensure_allowed(message): return
-    if not is_admin(message.from_user.id)):
-        await message.answer("Нет доступа.", reply_markup=kb(message.from_user.id)); return
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.", reply_markup=kb(message.from_user.id))
+        return
     await state.set_state(ReportStates.waiting_period)
     await message.answer(
         "Введите период дат (включительно):\n"
