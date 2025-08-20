@@ -16,8 +16,8 @@ from aiogram.types import (
 )
 
 # ================== Конфигурация ==================
-TOKEN = "<your-token>"  # замените на реальный токен
-ADMIN_IDS = [123456789]  # замените на реальные ID админов
+TOKEN = 8369016774:AAE09_ALathLnzKdHQF7qAbpL4_mJ9wg8IY  # замените на реальный токен
+ADMIN_IDS = [104653853]  # замените на реальные ID админов
 
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 storage = MemoryStorage()
