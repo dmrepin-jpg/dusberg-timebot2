@@ -22,6 +22,7 @@ from aiogram.types import (
     BufferedInputFile,
     BotCommandScopeDefault,
     BotCommandScopeChat,
+    Document,
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -124,31 +125,58 @@ def ensure_allowed(message: Message) -> bool:
 def today_shift(uid: int) -> Dict[str, Any]:
     return shifts_by_date[today_key()].setdefault(uid, {})
 
+# -------- Безопасная запись/чтение JSON --------
+def atomic_write_text(path: Path, text: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    bak = path.with_suffix(path.suffix + ".bak")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        if path.exists():
+            if bak.exists():
+                bak.unlink()
+            os.replace(path, bak)
+    except Exception:
+        pass
+    os.replace(tmp, path)
+
+def safe_load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except json.JSONDecodeError:
+        bak = path.with_suffix(path.suffix + ".bak")
+        if bak.exists():
+            try:
+                return json.loads(bak.read_text("utf-8"))
+            except Exception:
+                pass
+        logging.error("Файл %s повреждён, использую значение по умолчанию", path)
+        return default
+    except Exception as e:
+        logging.exception("Ошибка чтения %s: %s", path, e)
+        return default
+
 # ---- I/O сотрудников и смен
 def load_employees() -> dict[int, Dict[str, Any]]:
-    if EMP_FILE.exists():
-        try:
-            raw = json.loads(EMP_FILE.read_text("utf-8"))
-            result: dict[int, Dict[str, Any]] = {}
-            for k, v in raw.items():
-                uid = int(k)
-                if isinstance(v, str):  # обратная совместимость
-                    result[uid] = {"name": v, "active": True}
-                else:
-                    name = str(v.get("name", f"ID {uid}"))
-                    active = bool(v.get("active", True))
-                    result[uid] = {"name": name, "active": active}
-            return result
-        except Exception as e:
-            logging.exception("Не удалось прочитать employees.json: %s", e)
-    # создаём по умолчанию
-    EMP_FILE.write_text(json.dumps(DEFAULT_EMPLOYEES, ensure_ascii=False, indent=2), "utf-8")
-    # привести ключи к int
-    return {int(k): v for k, v in DEFAULT_EMPLOYEES.items()}
+    raw = safe_load_json(EMP_FILE, DEFAULT_EMPLOYEES)
+    result: dict[int, Dict[str, Any]] = {}
+    for k, v in raw.items():
+        uid = int(k)
+        if isinstance(v, str):  # обратная совместимость
+            result[uid] = {"name": v, "active": True}
+        else:
+            name = str(v.get("name", f"ID {uid}"))
+            active = bool(v.get("active", True))
+            result[uid] = {"name": name, "active": active}
+    if not EMP_FILE.exists():
+        atomic_write_text(EMP_FILE, json.dumps({str(k): v for k, v in result.items()}, ensure_ascii=False, indent=2))
+    return result
 
 def save_employees() -> None:
     out = {str(k): {"name": v.get("name",""), "active": bool(v.get("active", True))} for k, v in EMPLOYEES.items()}
-    EMP_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
+    atomic_write_text(EMP_FILE, json.dumps(out, ensure_ascii=False, indent=2))
 
 def dt_to_iso(dt: datetime.datetime | None) -> str | None:
     return dt.astimezone(MSK).isoformat() if dt else None
@@ -170,15 +198,11 @@ def save_shifts() -> None:
                 "comment": d.get("comment"),
                 "comment_done": d.get("comment_done"),
             }
-    SHIFT_FILE.write_text(json.dumps(data_out, ensure_ascii=False, indent=2), "utf-8")
+    atomic_write_text(SHIFT_FILE, json.dumps(data_out, ensure_ascii=False, indent=2))
 
 def load_shifts() -> None:
-    if not SHIFT_FILE.exists(): return
-    try:
-        data_in = json.loads(SHIFT_FILE.read_text("utf-8"))
-    except Exception as e:
-        logging.exception("Не удалось прочитать shifts.json: %s", e)
-        return
+    data_in = safe_load_json(SHIFT_FILE, {})
+    shifts_by_date.clear()
     for day, users in data_in.items():
         shifts_by_date[day] = {}
         for uid_str, d in users.items():
@@ -214,6 +238,7 @@ owner_menu_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="❇️ Добавить сотрудника"), KeyboardButton(text="🔴 Деактивировать")],
         [KeyboardButton(text="🟢 Активировать"), KeyboardButton(text="🗑 Удалить сотрудника")],
         [KeyboardButton(text="📋 Список сотрудников")],
+        [KeyboardButton(text="📤 Экспорт данных"), KeyboardButton(text="📥 Импорт данных")],
         [KeyboardButton(text="⬅️ Назад")],
     ],
     resize_keyboard=True
@@ -246,6 +271,11 @@ class EmpStates(StatesGroup):
     wait_deactivate = State()
     wait_activate = State()
 
+class ImportStates(StatesGroup):
+    choose = State()
+    wait_emp = State()
+    wait_shift = State()
+
 @router.message(F.text == "Сотрудники ⚙️")
 async def owner_menu(message: Message):
     if message.from_user.id != OWNER_ID: return
@@ -255,7 +285,9 @@ async def owner_menu(message: Message):
         "• «🔴 Деактивировать» — пришлите: <code>123456789</code>\n"
         "• «🟢 Активировать» — пришлите: <code>123456789</code>\n"
         "• «🗑 Удалить сотрудника» — пришлите: <code>123456789</code>\n"
-        "• «📋 Список сотрудников» — показать текущий справочник.",
+        "• «📋 Список сотрудников» — показать текущий справочник.\n"
+        "• «📤 Экспорт данных» — выгрузить employees.json и shifts.json.\n"
+        "• «📥 Импорт данных» — загрузить один из файлов обратно.",
         reply_markup=owner_menu_kb
     )
 
@@ -379,6 +411,73 @@ async def owner_activate_do(message: Message, state: FSMContext):
     save_employees()
     await state.clear()
     await message.answer(f"Активирован: {uid_act} — {meta.get('name','')} (🟢 активен)", reply_markup=owner_menu_kb)
+
+# ====== ЭКСПОРТ / ИМПОРТ ======
+@router.message(F.text == "📤 Экспорт данных")
+async def export_data(message: Message):
+    if message.from_user.id != OWNER_ID: return
+    try:
+        emp_bytes = EMP_FILE.read_bytes() if EMP_FILE.exists() else json.dumps(DEFAULT_EMPLOYEES, ensure_ascii=False, indent=2).encode("utf-8")
+        shifts_bytes = SHIFT_FILE.read_bytes() if SHIFT_FILE.exists() else b"{}"
+        await message.answer_document(BufferedInputFile(emp_bytes, filename="employees.json"))
+        await message.answer_document(BufferedInputFile(shifts_bytes, filename="shifts.json"))
+    except Exception as ex:
+        await message.answer(f"Не удалось экспортировать: {ex!r}")
+
+@router.message(F.text == "📥 Импорт данных")
+async def import_choose(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID: return
+    await state.set_state(ImportStates.choose)
+    await message.answer(
+        "Что импортируем?\n"
+        "• Отправь <b>employees.json</b> — обновлю справочник сотрудников\n"
+        "• Отправь <b>shifts.json</b> — обновлю смены\n"
+        "Или нажми «⬅️ Назад» для выхода.",
+        reply_markup=owner_menu_kb
+    )
+
+@router.message(ImportStates.choose, F.document)
+async def import_handle_doc(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID: return
+    doc: Document = message.document
+    filename = (doc.file_name or "").lower()
+    try:
+        file = await bot.get_file(doc.file_id)
+        buf = io.BytesIO()
+        await bot.download(file, destination=buf)
+        buf.seek(0)
+        content = buf.read().decode("utf-8")
+
+        if filename == "employees.json":
+            data = json.loads(content)
+            # в память → валидация → запись
+            new_map: dict[int, Dict[str, Any]] = {}
+            for k, v in data.items():
+                uid = int(k)
+                if isinstance(v, str):
+                    new_map[uid] = {"name": v, "active": True}
+                else:
+                    new_map[uid] = {"name": str(v.get("name","")), "active": bool(v.get("active", True))}
+            atomic_write_text(EMP_FILE, json.dumps({str(k): v for k, v in new_map.items()}, ensure_ascii=False, indent=2))
+            # перезагрузить в память
+            global EMPLOYEES
+            EMPLOYEES = load_employees()
+            await message.answer("Импорт сотрудников завершён ✅", reply_markup=owner_menu_kb)
+        elif filename == "shifts.json":
+            data = json.loads(content)
+            # простая проверка структуры
+            if not isinstance(data, dict):
+                return await message.answer("Файл shifts.json имеет неверный формат.")
+            atomic_write_text(SHIFT_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+            load_shifts()
+            await message.answer("Импорт смен завершён ✅", reply_markup=owner_menu_kb)
+        else:
+            await message.answer("Ожидаю файл <b>employees.json</b> или <b>shifts.json</b>.", reply_markup=owner_menu_kb)
+    except Exception as ex:
+        logging.exception("Импорт не удался: %s", ex)
+        await message.answer(f"Импорт не удался: {ex!r}", reply_markup=owner_menu_kb)
+    finally:
+        await state.clear()
 
 # ================== БИЗНЕС-ЛОГИКА СМЕН ==================
 @router.message(F.text == "Смену начал 🏭")
@@ -729,43 +828,31 @@ async def handle_report_period(message: Message, state: FSMContext):
     finally:
         await state.clear()
 
-# ================== DEBUG ==================
-from aiogram.filters import Command
-
-@router.message(Command("debug_touch"))
-async def debug_touch(message: Message):
-    # только OWNER может дергать отладку
-    if message.from_user.id != OWNER_ID:
-        return await message.answer("Нет доступа.")
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        now = datetime.datetime.now().isoformat(timespec="seconds")
-        EMP_FILE.write_text(f"debug employees at {now}\n", encoding="utf-8")
-        SHIFT_FILE.write_text(f"debug shifts at {now}\n", encoding="utf-8")
-        await message.answer("ok: wrote to /data")
-    except Exception as ex:
-        await message.answer(f"write error: {ex!r}")
-
+# ================== DEBUG (безопасные) ==================
 @router.message(Command("debug_files"))
 async def debug_files(message: Message):
-    # только OWNER может дергать отладку
+    if message.from_user.id != OWNER_ID:
+        return await message.answer("Нет доступа.")
+    e, s = EMP_FILE, SHIFT_FILE
+    await message.answer(
+        f"/data exists: {DATA_DIR.exists()}\n"
+        f"{e.name}: exists={e.exists()} size={(e.stat().st_size if e.exists() else 0)} path={e}\n"
+        f"{s.name}: exists={s.exists()} size={(s.stat().st_size if s.exists() else 0)} path={s}\n"
+    )
+
+@router.message(Command("debug_dump"))
+async def debug_dump(message: Message):
     if message.from_user.id != OWNER_ID:
         return await message.answer("Нет доступа.")
     try:
-        e, s = EMP_FILE, SHIFT_FILE
-        txt = (
-            f"/data exists: {DATA_DIR.exists()}\n"
-            f"{e.name}: exists={e.exists()} size={(e.stat().st_size if e.exists() else 0)} path={e}\n"
-            f"{s.name}: exists={s.exists()} size={(s.stat().st_size if s.exists() else 0)} path={s}\n"
-        )
-        await message.answer(txt)
+        await message.answer_document(
+            BufferedInputFile(EMP_FILE.read_bytes() if EMP_FILE.exists() else b"{}", filename="employees.json"))
+        await message.answer_document(
+            BufferedInputFile(SHIFT_FILE.read_bytes() if SHIFT_FILE.exists() else b"{}", filename="shifts.json"))
     except Exception as ex:
-        await message.answer(f"error: {ex!r}")
-
+        await message.answer(f"dump error: {ex!r}")
 
 # ================== СВОБОДНЫЙ ТЕКСТ (причины/комментарии) ==================
-from aiogram import F
-
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_comment_or_reason(message: Message):
     if not ensure_allowed(message): return
@@ -809,7 +896,6 @@ async def handle_comment_or_reason(message: Message):
         save_shifts()
         await message.answer("Комментарий сохранен. Хорошего отдыха!", reply_markup=kb(uid))
 
-
 # ================== ЗАПУСК ==================
 async def main():
     try:
@@ -820,7 +906,7 @@ async def main():
             BotCommand(command="start", description="Запуск бота"),
             BotCommand(command="whoami", description="Показать мою роль"),
             BotCommand(command="cancel", description="Отменить ввод периода"),
-            # debug-команды можно не публиковать в меню
+            # debug-команды не добавляем в меню
         ]
         await bot.set_my_commands(base_cmds, scope=BotCommandScopeDefault())
         await bot.set_my_commands(base_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
@@ -833,7 +919,6 @@ async def main():
             save_shifts()
         finally:
             await bot.session.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
