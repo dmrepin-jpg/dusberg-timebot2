@@ -1,4 +1,3 @@
-# main.py
 import os
 import asyncio
 import logging
@@ -8,41 +7,33 @@ from typing import Dict, Any
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import CommandStart
-from aiogram.types import (
-    BotCommand,
-    KeyboardButton,
-    Message,
-    ReplyKeyboardMarkup,
-)
+from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
 
-# ======== конфиг ========
-TOKEN = os.getenv("BOT_TOKEN")  # ЧИТАЕМ из переменной окружения
-ADMIN_IDS = [123456789]  # замените на реальные ID
+# ===== конфиг =====
+TOKEN = os.getenv("BOT_TOKEN")  # Railway → Variables
+ADMIN_IDS = [123456789]         # замени на ID админов
 
 if not TOKEN:
-    raise RuntimeError(
-        "Переменная окружения BOT_TOKEN не задана. "
-        "Создайте её в Railway → Settings → Variables."
-    )
+    raise RuntimeError("BOT_TOKEN не задан. Добавь переменную в Railway → Settings → Variables.")
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+# aiogram >= 3.7 — parse_mode через DefaultBotProperties
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# ======== клавиатуры ========
+# ===== клавиатуры =====
 user_buttons = [
     [KeyboardButton(text="Начал 🏭"), KeyboardButton(text="Закончил 🏡")],
     [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
 ]
-admin_buttons = user_buttons + [
-    [KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]
-]
+admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
 
-# ======== данные ========
+# ===== данные =====
 shift_data: Dict[int, Dict[str, Any]] = {}
 
 def is_weekend(date: datetime.date) -> bool:
@@ -70,7 +61,7 @@ def kb(user_id: int) -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-# ======== хендлеры ========
+# ===== хендлеры =====
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer("Добро пожаловать!", reply_markup=kb(message.from_user.id))
@@ -91,17 +82,13 @@ async def handle_start(message: Message):
         "need_start_reason": False,
         "need_end_reason": False,
     })
-
     need = False
     if is_weekend(now.date()):
-        need = True
-        await message.answer("Сейчас не рабочий день. Укажи причину начала смены:")
+        need = True; await message.answer("Сейчас не рабочий день. Укажи причину начала смены:")
     elif now.time() < datetime.time(8, 0):
-        need = True
-        await message.answer("Смена начата раньше 08:00. Укажи причину раннего начала:")
+        need = True; await message.answer("Смена начата раньше 08:00. Укажи причину раннего начала:")
     elif now.time() > datetime.time(8, 10):
-        need = True
-        await message.answer("Смена начата позже 08:10. Укажи причину опоздания:")
+        need = True; await message.answer("Смена начата позже 08:10. Укажи причину опоздания:")
     else:
         await message.answer("Смена начата. Продуктивного дня!")
     data["need_start_reason"] = need
@@ -112,20 +99,15 @@ async def handle_end(message: Message):
     now = datetime.datetime.now()
     data = shift_data.get(uid)
     if not data or not data.get("start"):
-        await message.answer("Смена ещё не начата.")
-        return
+        await message.answer("Смена ещё не начата."); return
     if data.get("end"):
-        await message.answer("Смена уже завершена.")
-        return
-
+        await message.answer("Смена уже завершена."); return
     data["end"] = now
     need = False
     if now.time() < datetime.time(17, 30):
-        need = True
-        await message.answer("Смена завершена раньше 17:30. Укажи причину раннего завершения:")
+        need = True; await message.answer("Смена завершена раньше 17:30. Укажи причину раннего завершения:")
     elif now.time() > datetime.time(17, 40):
-        need = True
-        await message.answer("Смена завершена позже. Укажи причину переработки:")
+        need = True; await message.answer("Смена завершена позже. Укажи причину переработки:")
     else:
         await message.answer("Спасибо! Хорошего отдыха!")
     data["need_end_reason"] = need
@@ -144,11 +126,9 @@ async def handle_help(message: Message):
 @router.message(F.text == "Статус смены")
 async def handle_shift_status(message: Message):
     if message.from_user.id not in ADMIN_IDS:
-        await message.answer("Нет доступа.")
-        return
+        await message.answer("Нет доступа."); return
     if not shift_data:
-        await message.answer("Нет данных о сменах.")
-        return
+        await message.answer("Нет данных о сменах."); return
     lines = []
     for uid, data in shift_data.items():
         s = data.get("start").strftime("%H:%M") if data.get("start") else "—"
@@ -159,17 +139,14 @@ async def handle_shift_status(message: Message):
 @router.message(F.text == "Отчет 📈")
 async def handle_report(message: Message):
     if message.from_user.id not in ADMIN_IDS:
-        await message.answer("Нет доступа.")
-        return
+        await message.answer("Нет доступа."); return
     await message.answer("Формирование отчёта пока в разработке.")
 
-# коммент/причина
 @router.message(F.text)
 async def handle_comment(message: Message):
     uid = message.from_user.id
     data = shift_data.get(uid)
-    if not data:
-        return
+    if not data: return
     if data.get("need_start_reason") and not data.get("start_reason"):
         data["start_reason"] = message.text.strip()
         data["need_start_reason"] = False
@@ -179,7 +156,6 @@ async def handle_comment(message: Message):
         data["end_reason"] = message.text.strip()
         data["need_end_reason"] = False
         await message.answer("Спасибо! Хорошего отдыха!")
-        return
 
 async def main():
     logging.basicConfig(level=logging.INFO)
