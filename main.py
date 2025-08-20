@@ -13,12 +13,21 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import CommandStart, Command
 from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
 
-# ========= utils / config =========
+# ========= utils / ENV parsing =========
+def clean_env_value(value: str | None) -> str:
+    """Убирает внешние кавычки/пробелы (Raw Editor Railway иногда их показывает)."""
+    if not value:
+        return ""
+    return value.strip().strip('"').strip("'").strip()
+
 def parse_admin_ids(env_value: str | None) -> Set[int]:
-    """Парсер ADMIN_IDS: поддержка разделителей , ; пробел/перенос, срезает кавычки/неразрывные пробелы."""
-    if not env_value:
+    """
+    Парсим ADMIN_IDS из ENV: поддерживаем разделители , ; пробел/перенос.
+    Убираем кавычки и неразрывные пробелы.
+    """
+    cleaned = clean_env_value(env_value).replace("\u00A0", " ")
+    if not cleaned:
         return set()
-    cleaned = (env_value or "").replace('"', '').replace("'", "").replace("\u00A0", " ").strip()
     parts = re.split(r"[,\s;]+", cleaned)
     out: Set[int] = set()
     for p in parts:
@@ -30,26 +39,27 @@ def parse_admin_ids(env_value: str | None) -> Set[int]:
             logging.warning("ADMIN_IDS: пропускаю нечисловое значение: %r", p)
     return out
 
-TOKEN = os.getenv("BOT_TOKEN")
+# ========= ENV =========
+TOKEN = clean_env_value(os.getenv("BOT_TOKEN"))
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN не задан. Railway → Settings → Variables.")
 
+owner_raw = clean_env_value(os.getenv("OWNER_ID"))
 try:
-    OWNER_ID = int(os.getenv("OWNER_ID", "").strip())
+    OWNER_ID = int(owner_raw)
 except ValueError:
-    OWNER_ID = 0
-if not OWNER_ID:
-    raise RuntimeError("OWNER_ID не задан или не число. Укажи свой Telegram ID в переменной окружения OWNER_ID.")
+    raise RuntimeError("OWNER_ID не задан или не число. Укажи свой Telegram ID в OWNER_ID.")
 
-RAW_ADMIN_IDS = os.getenv("ADMIN_IDS", "")
+RAW_ADMIN_IDS = clean_env_value(os.getenv("ADMIN_IDS"))
 ADMIN_IDS: Set[int] = parse_admin_ids(RAW_ADMIN_IDS)
 
+# ========= bot / dp =========
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
-# ========= клавиатуры =========
+# ========= keyboards =========
 user_buttons = [
     [KeyboardButton(text="Начал 🏭"), KeyboardButton(text="Закончил 🏡")],
     [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
@@ -65,7 +75,7 @@ def kb(user_id: int) -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-# ========= данные смен =========
+# ========= in-memory data =========
 shift_data: Dict[int, Dict[str, Any]] = {}
 
 def is_weekend(date: datetime.date) -> bool:
@@ -86,7 +96,7 @@ def format_status(user_id: int) -> str:
         lines.append(f"Причина завершения: {data['end_reason']}")
     return "\n".join(lines)
 
-# ========= служебные команды =========
+# ========= commands (service) =========
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer("Добро пожаловать!", reply_markup=kb(message.from_user.id))
@@ -109,8 +119,7 @@ async def cmd_admins(message: Message):
         await message.answer("Нет доступа.", reply_markup=kb(message.from_user.id)); return
     listed = ", ".join(map(str, sorted(ADMIN_IDS))) or "—"
     await message.answer(
-        f"OWNER: <code>{OWNER_ID}</code>\n"
-        f"Админы: <code>{listed}</code>",
+        f"OWNER: <code>{OWNER_ID}</code>\nАдмины: <code>{listed}</code>",
         reply_markup=kb(message.from_user.id)
     )
 
@@ -156,28 +165,23 @@ async def cmd_admin_remove(message: Message):
     ADMIN_IDS.remove(rem_id)
     listed = ", ".join(map(str, sorted(ADMIN_IDS))) or "—"
     await message.answer(
-        f"Удалён: <code>{rem_id}</code>\n"
-        f"Текущие админы: <code>{listed}</code>\n"
+        f"Удалён: <code>{rem_id}</code>\nТекущие: <code>{listed}</code>\n"
         "⚠️ Обнови Railway → ADMIN_IDS и Redeploy.",
         reply_markup=kb(message.from_user.id)
     )
 
 @router.message(Command("refresh"))
 async def cmd_refresh(message: Message):
-    """Перечитать ADMIN_IDS из ENV (после изменения переменной в Railway)."""
+    """Перечитать ADMIN_IDS из ENV (доступно только OWNER)."""
     if message.from_user.id != OWNER_ID:
         await message.answer("Только владелец может обновлять список из ENV.", reply_markup=kb(message.from_user.id)); return
     global ADMIN_IDS, RAW_ADMIN_IDS
-    RAW_ADMIN_IDS = os.getenv("ADMIN_IDS", "")
+    RAW_ADMIN_IDS = clean_env_value(os.getenv("ADMIN_IDS"))
     ADMIN_IDS = parse_admin_ids(RAW_ADMIN_IDS)
     listed = ", ".join(map(str, sorted(ADMIN_IDS))) or "—"
-    await message.answer(
-        f"Перечитал ADMIN_IDS.\nOWNER: <code>{OWNER_ID}</code>\n"
-        f"Админы: <code>{listed}</code>",
-        reply_markup=kb(message.from_user.id)
-    )
+    await message.answer(f"Перечитал ADMIN_IDS. Сейчас: <code>{listed}</code>", reply_markup=kb(message.from_user.id))
 
-# ========= бизнес-логика =========
+# ========= business handlers =========
 @router.message(F.text == "Начал 🏭")
 async def handle_start(message: Message):
     uid = message.from_user.id
@@ -247,10 +251,10 @@ async def handle_shift_status(message: Message):
 async def handle_report(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("Нет доступа.", reply_markup=kb(message.from_user.id)); return
-    # TODO: здесь формирование реального отчёта (CSV/Excel/текст)
+    # TODO: генерация реального отчёта (CSV/Excel/текст)
     await message.answer("Формирование отчёта пока в разработке.", reply_markup=kb(message.from_user.id))
 
-# причины/комментарии (по запросу)
+# комментарии / причины (по запросу)
 @router.message(F.text)
 async def handle_comment(message: Message):
     uid = message.from_user.id
@@ -271,7 +275,6 @@ async def main():
     logging.info("OWNER_ID: %s", OWNER_ID)
     logging.info("ADMIN_IDS raw: %r", RAW_ADMIN_IDS)
     logging.info("ADMIN_IDS parsed: %s", sorted(ADMIN_IDS))
-
     await bot.set_my_commands([
         BotCommand(command="start", description="Запуск бота"),
         BotCommand(command="myid", description="Показать мой ID и статус"),
