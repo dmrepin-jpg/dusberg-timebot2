@@ -15,7 +15,9 @@ OWNER_ID = 104653853  # жёстко твой ID
 ADMIN_IDS = [104653853, 1155243378]  # список админов в коде
 
 # ================== ИНИЦИАЛИЗАЦИЯ ==================
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN)  # без parse_mode
+bot._default_parse_mode = ParseMode.HTML  # задаём глобально
+
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
