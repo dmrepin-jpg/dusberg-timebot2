@@ -195,9 +195,9 @@ load_shifts()
 # ================== КЛАВИАТУРЫ ==================
 user_buttons = [
     [KeyboardButton(text="Смену начал 🏭"), KeyboardButton(text="Смену закончил 🏡")],
-    [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
+    [KeyboardButton(text="Мой статус📍"), KeyboardButton(text="Инструкция 📖")],
 ]
-admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
+admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены 🛠")]]
 
 def kb(uid: int) -> ReplyKeyboardMarkup:
     base = admin_buttons if is_admin(uid) else user_buttons
@@ -207,9 +207,9 @@ def kb(uid: int) -> ReplyKeyboardMarkup:
 
 owner_menu_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ Добавить сотрудника"), KeyboardButton(text="🟡 Деактивировать")],
+        [KeyboardButton(text="❇️ Добавить сотрудника"), KeyboardButton(text="🔴 Деактивировать")],
         [KeyboardButton(text="🟢 Активировать"), KeyboardButton(text="🗑 Удалить сотрудника")],
-        [KeyboardButton(text="📜 Список сотрудников")],
+        [KeyboardButton(text="📋 Список сотрудников")],
         [KeyboardButton(text="⬅️ Назад")],
     ],
     resize_keyboard=True
@@ -219,7 +219,7 @@ owner_menu_kb = ReplyKeyboardMarkup(
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     if not ensure_allowed(message): return
-    await message.answer("Добро пожаловать в бот учёта рабочего времени DUSBERG!", reply_markup=kb(message.from_user.id))
+    await message.answer("Добро пожаловать в бот учёта рабочего времени DUSBERG ⏱️", reply_markup=kb(message.from_user.id))
 
 @router.message(Command("whoami"))
 async def cmd_whoami(message: Message):
@@ -247,11 +247,11 @@ async def owner_menu(message: Message):
     if message.from_user.id != OWNER_ID: return
     await message.answer(
         "Меню сотрудников:\n"
-        "• «➕ Добавить сотрудника» — пришлите: <code>123456789 Иванов И.И.</code>\n"
-        "• «🟡 Деактивировать» — пришлите: <code>123456789</code>\n"
+        "• «❇️ Добавить сотрудника» — пришлите: <code>123456789 Иванов И.И.</code>\n"
+        "• «🔴 Деактивировать» — пришлите: <code>123456789</code>\n"
         "• «🟢 Активировать» — пришлите: <code>123456789</code>\n"
         "• «🗑 Удалить сотрудника» — пришлите: <code>123456789</code>\n"
-        "• «📜 Список сотрудников» — показать текущий справочник.",
+        "• «📋 Список сотрудников» — показать текущий справочник.",
         reply_markup=owner_menu_kb
     )
 
@@ -261,7 +261,7 @@ async def owner_back(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Главное меню.", reply_markup=kb(message.from_user.id))
 
-@router.message(F.text == "📜 Список сотрудников")
+@router.message(F.text == "📋 Список сотрудников")
 async def owner_list(message: Message):
     if message.from_user.id != OWNER_ID: return
     if not EMPLOYEES:
@@ -275,7 +275,7 @@ async def owner_list(message: Message):
         await message.answer("\n".join(lines[i:i+50]))
     await message.answer("Готово.", reply_markup=owner_menu_kb)
 
-@router.message(F.text == "➕ Добавить сотрудника")
+@router.message(F.text == "❇️ Добавить сотрудника")
 async def owner_add_start(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID: return
     await state.set_state(EmpStates.wait_add)
@@ -323,7 +323,7 @@ async def owner_del_do(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(f"Удалён: {uid_del}", reply_markup=owner_menu_kb)
 
-@router.message(F.text == "🟡 Деактивировать")
+@router.message(F.text == "🔴 Деактивировать")
 async def owner_deactivate_start(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID: return
     await state.set_state(EmpStates.wait_deactivate)
@@ -394,13 +394,13 @@ async def handle_start(message: Message):
     t = now.time()
     if is_weekend(now.date()):
         pending_reason[uid] = "start_early"
-        await message.answer("Сегодня выходной. Укажи причину начала смены (текстом):", reply_markup=kb(uid))
+        await message.answer("Сегодня выходной. Укажи причину начала смены.", reply_markup=kb(uid))
     elif t < PROMPT_EARLY_OK_FROM:
         pending_reason[uid] = "start_early"
-        await message.answer("Смена начата слишком рано (до 07:45). Укажи причину (текстом):", reply_markup=kb(uid))
+        await message.answer("Смена начата слишком рано. Укажи причину.", reply_markup=kb(uid))
     elif t > PROMPT_START_OK_TILL:
         pending_reason[uid] = "start_late"
-        await message.answer("Смена начата позже 08:10. Укажи причину опоздания (текстом):", reply_markup=kb(uid))
+        await message.answer("Смена начата позже. Укажи причину.", reply_markup=kb(uid))
     else:
         await message.answer("Смена начата. Продуктивного дня!", reply_markup=kb(uid))
 
@@ -425,10 +425,10 @@ async def handle_end(message: Message):
     t = now.time()
     if t < END_NORM:
         pending_reason[uid] = "end_early"
-        await message.answer("Смена завершена слишком рано (до 17:30). Укажи причину (текстом):", reply_markup=kb(uid))
+        await message.answer("Смена завершена слишком рано. Укажи причину.", reply_markup=kb(uid))
     elif t > PROMPT_END_OK_TILL:
         pending_reason[uid] = "end_late"
-        await message.answer("Смена завершена позже 17:45. Укажи причину переработки (текстом):", reply_markup=kb(uid))
+        await message.answer("Смена завершена позже. Укажи причину переработки.", reply_markup=kb(uid))
     else:
         await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
 
@@ -446,9 +446,9 @@ async def handle_status(message: Message):
         f"Смена завершена в: {fmt_hm(data.get('end'))}",
     ]
     if data.get("start_reason"):
-        lines.append(f"Причина начала: {data['start_reason']}")
+        lines.append(f"Причина отклонения: {data['start_reason']}")
     if data.get("end_reason"):
-        lines.append(f"Причина завершения: {data['end_reason']}")
+        lines.append(f"Причина отклонения: {data['end_reason']}")
     if data.get("comment"):
         lines.append(f"Комментарий: {data['comment']}")
     await message.answer("\n".join(lines), reply_markup=kb(uid))
@@ -457,9 +457,10 @@ async def handle_status(message: Message):
 async def handle_help(message: Message):
     if not ensure_allowed(message): return
     await message.answer(
-        "Нажимай «Смену начал 🏭» в начале смены и «Смену закончил 🏡» по завершению.\n"
-        "Если бот спрашивает причину — ответь одним сообщением (текстом). Это сохранится как причина начала/завершения.\n"
-        "Дополнительные пояснения можно прислать отдельным сообщением — это общий комментарий.",
+        "Для регистрации времени начала смены нажми - Смену начал 🏭 \n" 
+        "Для регистрации времени завершения смены нажми - Смену закончил 🏡\n"
+        "Если бот спрашивает причину — ответь одним текстовым сообщением - это сохранится как причина отклонения.\n"
+        "Дополнительные пояснения по смене можно прислать отдельным сообщением — это общий комментарий.",
         reply_markup=kb(message.from_user.id)
     )
 
@@ -481,12 +482,24 @@ async def handle_shift_status(message: Message):
         s = fmt_hm(data.get("start"))
         e = fmt_hm(data.get("end"))
         who = fio(uid)
-        suffix = []
-        if data.get("start_reason"): suffix.append("причина начала есть")
-        if data.get("end_reason"): suffix.append("причина завершения есть")
-        extra = f" ({', '.join(suffix)})" if suffix else ""
-        lines.append(f"{who}: начата в {s}, завершена в {e}{extra}")
-    await message.answer("\n".join(lines), reply_markup=kb(message.from_user.id))
+
+        row = [f"{who}: начата в {s}, завершена в {e}"]
+
+        # Собираем причины отклонений (если есть)
+        reasons = []
+        if data.get("start_reason"):
+            reasons.append(f"начало — {data['start_reason']}")
+        if data.get("end_reason"):
+            reasons.append(f"завершение — {data['end_reason']}")
+
+        if reasons:
+            row.append(f"⚠️ Причина отклонения: " + "; ".join(reasons))
+
+        # Блок по сотруднику
+        lines.append("\n".join(row))
+
+    # Пустая строка между сотрудниками
+    await message.answer("\n\n".join(lines), reply_markup=kb(message.from_user.id))
 
 # ================== ОТЧЁТ ПО ДИАПАЗОНУ (XLSX) ==================
 class ReportStates(StatesGroup):
@@ -703,10 +716,10 @@ async def handle_comment_or_reason(message: Message):
             pending_reason.pop(uid, None); return
         if reason_flag in ("start_early", "start_late"):
             shift["start_reason"] = txt
-            await message.answer("Спасибо! Причина начала зафиксирована.", reply_markup=kb(uid))
+            await message.answer("Спасибо! Причина зафиксирована.", reply_markup=kb(uid))
         elif reason_flag in ("end_early", "end_late"):
             shift["end_reason"] = txt
-            await message.answer("Спасибо! Причина завершения зафиксирована.", reply_markup=kb(uid))
+            await message.answer("Спасибо! Причина зафиксирована.", reply_markup=kb(uid))
         pending_reason.pop(uid, None)
         save_shifts()
         return
@@ -719,7 +732,7 @@ async def handle_comment_or_reason(message: Message):
         save_shifts()
     elif shift.get("end") and not shift.get("comment_done"):
         shift["comment_done"] = True
-        await message.answer("Комментарий получен. Хорошего отдыха!", reply_markup=kb(uid))
+        await message.answer("Комментарий сохранен. Хорошего отдыха!", reply_markup=kb(uid))
         save_shifts()
 
 # ================== ЗАПУСК ==================
