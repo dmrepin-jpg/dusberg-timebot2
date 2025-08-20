@@ -23,7 +23,7 @@ from aiogram.types import (
     BotCommandScopeDefault,
     BotCommandScopeChat,
 )
-from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from zoneinfo import ZoneInfo
@@ -32,9 +32,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-# ================== НАСТРОЙКИ ==================
+# ================== КОНФИГ ==================
 
-# Токен из ENV
 RAW_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_TOKEN = (
     RAW_TOKEN.replace("\u00A0", " ").replace("\r", "").replace("\n", "").strip().strip('"').strip("'")
@@ -42,11 +41,10 @@ BOT_TOKEN = (
 if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError(f"BOT_TOKEN выглядит неверно. RAW={RAW_TOKEN!r}")
 
-# Роли
 OWNER_ID  = 104653853
 ADMIN_IDS = [104653853, 1155243378]  # можно расширять
 
-# Файлы данных
+# файлы данных
 EMP_FILE   = Path("employees.json")
 SHIFT_FILE = Path("shifts.json")
 
@@ -54,37 +52,40 @@ SHIFT_FILE = Path("shifts.json")
 MSK = ZoneInfo("Europe/Moscow")
 
 # ===== Нормативы для ОТЧЁТА (Excel) — НЕ МЕНЯЕМ =====
-START_NORM = datetime.time(8, 0)      # начало: норма
-START_OK_TILL = datetime.time(8, 10)  # начало: допустимо до
-END_NORM = datetime.time(17, 30)      # конец: норма
-END_OK_TILL = datetime.time(17, 40)   # конец: допустимо до
+START_NORM = datetime.time(8, 0)      # начало норма
+START_OK_TILL = datetime.time(8, 10)  # допустимо до
+END_NORM = datetime.time(17, 30)      # конец норма
+END_OK_TILL = datetime.time(17, 40)   # допустимо до
 
-# ===== Допуски ТОЛЬКО для вопросов в БОТЕ =====
-PROMPT_EARLY_OK_FROM = datetime.time(7, 45)  # начало до 07:45 — спросим причину
-PROMPT_START_OK_TILL = datetime.time(8, 10)  # после 08:10 — спросим причину
-PROMPT_END_OK_TILL   = datetime.time(17, 45) # после 17:45 — спросим причину
+# ===== Допуски ТОЛЬКО для вопросов в боте =====
+PROMPT_EARLY_OK_FROM = datetime.time(7, 45)  # если раньше — спросим причину
+PROMPT_START_OK_TILL = datetime.time(8, 10)  # если позже — спросим причину
+PROMPT_END_OK_TILL   = datetime.time(17, 45) # если позже — спросим причину
 
 # ================== ИНИЦИАЛИЗАЦИЯ ==================
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
-# ================== ДАННЫЕ (ПО ДНЯМ, МСК) ==================
+# ================== ПАМЯТЬ/ДАННЫЕ ==================
+
 # shifts_by_date["YYYY-MM-DD"][user_id] = {...}
 shifts_by_date: Dict[str, Dict[int, Dict[str, Any]]] = defaultdict(dict)
 
-# Справочник сотрудников: ID -> ФИО (из файла)
+# Справочник: ID -> ФИО
 DEFAULT_EMPLOYEES = {
     str(OWNER_ID): "OWNER",
 }
-EMPLOYEES: Dict[int, str] = {}  # загрузим из файла ниже
+EMPLOYEES: Dict[int, str] = {}
 
-# Ожидание ввода причины: { user_id: "start_early"|"start_late"|"end_early"|"end_late" }
-pending_reason: Dict[int, str] = {}
+# ожидаем причину (по пользователю)
+pending_reason: Dict[int, str] = {}  # "start_early"|"start_late"|"end_early"|"end_late"
 
 # ================== УТИЛИТЫ ==================
+
 def msk_now() -> datetime.datetime:
     return datetime.datetime.now(MSK)
 
@@ -99,7 +100,7 @@ def fmt_hm(dt: datetime.datetime | None) -> str:
     return dt.astimezone(MSK).strftime("%H:%M")
 
 def is_weekend(date: datetime.date) -> bool:
-    return calendar.weekday(date.year, date.month, date.day) >= 5  # 5=Сб, 6=Вс
+    return calendar.weekday(date.year, date.month, date.day) >= 5
 
 def fio(uid: int) -> str:
     return EMPLOYEES.get(uid, f"Неизвестный ({uid})")
@@ -120,7 +121,8 @@ def ensure_allowed(message: Message) -> bool:
 def today_shift(uid: int) -> Dict[str, Any]:
     return shifts_by_date[today_key()].setdefault(uid, {})
 
-# ================== I/O СПРАВОЧНИКА И СМЕН ==================
+# ---- I/O сотрудников и смен
+
 def load_employees() -> dict[int, str]:
     if EMP_FILE.exists():
         try:
@@ -142,7 +144,7 @@ def dt_to_iso(dt: datetime.datetime | None) -> str | None:
 def dt_from_iso(s: str | None) -> datetime.datetime | None:
     if not s:
         return None
-    return datetime.datetime.fromisoformat(s)  # tz-aware
+    return datetime.datetime.fromisoformat(s)
 
 def save_shifts() -> None:
     data_out: dict[str, dict[str, dict[str, Any]]] = {}
@@ -180,11 +182,12 @@ def load_shifts() -> None:
                 "comment_done": d.get("comment_done"),
             }
 
-# Загрузим данные при старте процесса
+# загрузка при старте
 EMPLOYEES = load_employees()
 load_shifts()
 
-# ================== КНОПКИ ==================
+# ================== КЛАВИАТУРЫ ==================
+
 user_buttons = [
     [KeyboardButton(text="Смену начал 🏭"), KeyboardButton(text="Смену закончил 🏡")],
     [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
@@ -192,12 +195,22 @@ user_buttons = [
 admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
 
 def kb(uid: int) -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=admin_buttons if is_admin(uid) else user_buttons,
-        resize_keyboard=True
-    )
+    base = admin_buttons if is_admin(uid) else user_buttons
+    if uid == OWNER_ID:  # только Owner видит вход в меню сотрудников
+        base = [*base, [KeyboardButton(text="Сотрудники ⚙️")]]
+    return ReplyKeyboardMarkup(keyboard=base, resize_keyboard=True)
+
+owner_menu_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить сотрудника"), KeyboardButton(text="➖ Удалить сотрудника")],
+        [KeyboardButton(text="📜 Список сотрудников")],
+        [KeyboardButton(text="⬅️ Назад")],
+    ],
+    resize_keyboard=True
+)
 
 # ================== КОМАНДЫ ==================
+
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     if not ensure_allowed(message): return
@@ -215,65 +228,97 @@ async def cmd_whoami(message: Message):
         reply_markup=kb(uid)
     )
 
-# ----- OWNER-Команды управления справочником -----
-def owner_only(uid: int) -> bool:
-    return uid == OWNER_ID
+# ================== OWNER-МЕНЮ «Сотрудники ⚙️» ==================
 
-@router.message(Command("emp_list"))
-async def emp_list(message: Message):
-    if not owner_only(message.from_user.id):
+class EmpStates(StatesGroup):
+    wait_add = State()
+    wait_del = State()
+
+@router.message(F.text == "Сотрудники ⚙️")
+async def owner_menu(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    await message.answer(
+        "Меню сотрудников:\n"
+        "• «➕ Добавить сотрудника» — пришлите: <code>123456789 Иванов И.И.</code>\n"
+        "• «➖ Удалить сотрудника» — пришлите: <code>123456789</code>\n"
+        "• «📜 Список сотрудников» — показать справочник.",
+        reply_markup=owner_menu_kb
+    )
+
+@router.message(F.text == "⬅️ Назад")
+async def owner_back(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    await state.clear()
+    await message.answer("Главное меню.", reply_markup=kb(message.from_user.id))
+
+@router.message(F.text == "📜 Список сотрудников")
+async def owner_list(message: Message):
+    if message.from_user.id != OWNER_ID:
         return
     if not EMPLOYEES:
-        return await message.answer("Справочник пуст.")
-    lines = [f"{uid}: {name}" for uid, name in sorted(EMPLOYEES.items(), key=lambda kv: kv[0])]
-    await message.answer("Сотрудники:\n" + "\n".join(lines))
-
-@router.message(Command("emp_add"))
-async def emp_add(message: Message, command: CommandObject):
-    if not owner_only(message.from_user.id):
+        await message.answer("Справочник пуст.", reply_markup=owner_menu_kb)
         return
-    text = (command.args or "").strip()
-    if not text:
-        return await message.answer('Формат: /emp_add <id> <ФИО в кавычках или без>')
+    lines = [f"{uid}: {name}" for uid, name in sorted(EMPLOYEES.items(), key=lambda kv: kv[0])]
+    for i in range(0, len(lines), 50):
+        await message.answer("\n".join(lines[i:i+50]))
+    await message.answer("Готово.", reply_markup=owner_menu_kb)
+
+@router.message(F.text == "➕ Добавить сотрудника")
+async def owner_add_start(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    await state.set_state(EmpStates.wait_add)
+    await message.answer("Пришлите строку: <code>123456789 Иванов И.И.</code>", reply_markup=owner_menu_kb)
+
+@router.message(EmpStates.wait_add, F.text)
+async def owner_add_do(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    text = (message.text or "").strip()
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
-        return await message.answer('Нужно и ID, и ФИО. Пример: /emp_add 123 "Иванов И.И."')
+        return await message.answer("Нужно и ID, и ФИО. Пример: <code>123456789 Иванов И.И.</code>", reply_markup=owner_menu_kb)
     try:
         new_id = int(parts[0])
     except ValueError:
-        return await message.answer("ID должен быть числом.")
+        return await message.answer("ID должен быть числом.", reply_markup=owner_menu_kb)
     name = parts[1].strip().strip('"').strip("'")
     if not name:
-        return await message.answer("Пустое имя.")
+        return await message.answer("Пустое имя.", reply_markup=owner_menu_kb)
     EMPLOYEES[new_id] = name
     save_employees()
-    await message.answer(f"Добавлен: {new_id} — {name}")
+    await state.clear()
+    await message.answer(f"Добавлен: {new_id} — {name}", reply_markup=owner_menu_kb)
 
-@router.message(Command("emp_del"))
-async def emp_del(message: Message, command: CommandObject):
-    if not owner_only(message.from_user.id):
+@router.message(F.text == "➖ Удалить сотрудника")
+async def owner_del_start(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
         return
-    text = (command.args or "").strip()
-    if not text:
-        return await message.answer("Формат: /emp_del <id>")
+    await state.set_state(EmpStates.wait_del)
+    await message.answer("Пришлите ID сотрудника. Пример: <code>123456789</code>", reply_markup=owner_menu_kb)
+
+@router.message(EmpStates.wait_del, F.text)
+async def owner_del_do(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    text = (message.text or "").strip()
     try:
-        uid = int(text)
+        uid_del = int(text)
     except ValueError:
-        return await message.answer("ID должен быть числом.")
-    if EMPLOYEES.pop(uid, None) is None:
-        return await message.answer("Такого ID нет в справочнике.")
+        return await message.answer("ID должен быть числом.", reply_markup=owner_menu_kb)
+    if uid_del == OWNER_ID:
+        return await message.answer("Нельзя удалить OWNER.", reply_markup=owner_menu_kb)
+    if EMPLOYEES.pop(uid_del, None) is None:
+        await state.clear()
+        return await message.answer("Такого ID нет в справочнике.", reply_markup=owner_menu_kb)
     save_employees()
-    await message.answer(f"Удалён: {uid}")
+    await state.clear()
+    await message.answer(f"Удалён: {uid_del}", reply_markup=owner_menu_kb)
 
-@router.message(Command("emp_reload"))
-async def emp_reload(message: Message):
-    if not owner_only(message.from_user.id):
-        return
-    global EMPLOYEES
-    EMPLOYEES = load_employees()
-    await message.answer("Справочник перезагружен из файла.")
+# ================== БИЗНЕС-ЛОГИКА СМЕН ==================
 
-# ================== БИЗНЕС-ЛОГИКА ==================
 @router.message(F.text == "Смену начал 🏭")
 async def handle_start(message: Message):
     if not ensure_allowed(message): return
@@ -360,8 +405,8 @@ async def handle_status(message: Message):
 async def handle_help(message: Message):
     if not ensure_allowed(message): return
     await message.answer(
-        "Для регистрации времени начала смены нажми «Смену начал 🏭». Для регистрации завершения — «Смену закончил 🏡».\n"
-        "Если бот спрашивает причину — ответь одним сообщением (текстом), это сохранится как причина начала/завершения.\n"
+        "Нажимай «Смену начал 🏭» в начале смены и «Смену закончил 🏡» по завершению.\n"
+        "Если бот спрашивает причину — ответь одним сообщением (текстом). Это сохранится как причина начала/завершения.\n"
         "Дополнительные пояснения можно прислать отдельным сообщением — это общий комментарий.",
         reply_markup=kb(message.from_user.id)
     )
@@ -394,6 +439,7 @@ async def handle_shift_status(message: Message):
     await message.answer("\n".join(lines), reply_markup=kb(message.from_user.id))
 
 # ================== ОТЧЁТ ПО ДИАПАЗОНУ (XLSX) ==================
+
 class ReportStates(StatesGroup):
     waiting_period = State()
 
@@ -419,7 +465,7 @@ def calc_minutes(a: datetime.time, b: datetime.time) -> int:
     return int((dt_b - dt_a).total_seconds() // 60)
 
 def deviation_columns(start_dt: datetime.datetime | None, end_dt: datetime.datetime | None) -> tuple[int,int,int,int]:
-    """(раньше_начало, позже_начало, раньше_конец, позже_конец) в минутах (>=0) — ДЛЯ ОТЧЁТА"""
+    """(раньше_начало, позже_начало, раньше_конец, позже_конец) в минутах (>=0) — логика ОТЧЁТА"""
     early_start = late_start = early_end = late_end = 0
     if start_dt:
         st_local = start_dt.astimezone(MSK).time()
@@ -445,6 +491,8 @@ def minutes_between(start_dt: datetime.datetime | None, end_dt: datetime.datetim
     return int((b - a).total_seconds() // 60)
 
 def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
+    from math import isfinite  # на будущее
+
     wb = Workbook()
     ws_shifts = wb.active
     ws_shifts.title = "Смены"
@@ -452,20 +500,17 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     ws_emps = wb.create_sheet("Сотрудники")
     ws_params = wb.create_sheet("Параметры")
 
-    # ---- Шапки
-    shifts_header = [
+    # заголовки
+    ws_shifts.append([
         "Дата","Сотрудник","ID","Начало","Конец",
         "Раннее начало, мин","Позднее начало, мин","Раннее завершение, мин","Позднее завершение, мин",
         "Длительность, мин","Длительность, ч","Выходной","Причина начала","Причина завершения","Комментарий"
-    ]
-    ws_shifts.append(shifts_header)
-
-    daily_header = [
+    ])
+    ws_daily.append([
         "Дата","Сотрудник","ID","Начало","Конец",
         "Раннее начало, мин","Позднее начало, мин","Раннее завершение, мин","Позднее завершение, мин",
         "Длительность, мин","Длительность, ч","Выходной"
-    ]
-    ws_daily.append(daily_header)
+    ])
 
     ws_emps.append(["ID","Сотрудник"])
     for uid, name in sorted(EMPLOYEES.items()):
@@ -479,10 +524,10 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     ws_params.append(["Допустимо до (конец)","17:40"])
     ws_params.append(["Период отчёта", f"{date_from.isoformat()} — {date_to.isoformat()}"])
 
-    # ---- Данные
+    # данные
     for day in daterange_inclusive(date_from, date_to):
-        key = day.isoformat()
-        day_data = shifts_by_date.get(key, {})
+        day_key = day.isoformat()
+        day_data = shifts_by_date.get(day_key, {})
         weekend = "Да" if is_weekend(day) else "Нет"
 
         for uid, data in day_data.items():
@@ -512,7 +557,7 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
                 work_min, work_hours, weekend
             ])
 
-    # ---- Форматы столбцов и немного красоты
+    # оформление
     def fit_columns(ws):
         widths = {}
         for row in ws.iter_rows(values_only=True):
@@ -524,7 +569,7 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
 
     for ws in (ws_shifts, ws_daily, ws_emps, ws_params):
         fit_columns(ws)
-        # центрируем заголовки
+        # шапка жирная и по центру
         for cell in next(ws.iter_rows(min_row=1, max_row=1)):
             cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="center")
@@ -533,7 +578,8 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     wb.save(bio)
     return bio.getvalue()
 
-# ======== FSM: просим период у админа по кнопке «Отчет 📈» ========
+# ======== FSM: запрос периода по кнопке «Отчет 📈» ========
+
 class ReportStates(StatesGroup):
     waiting_period = State()
 
@@ -545,7 +591,7 @@ async def ask_report_period(message: Message, state: FSMContext):
         return
     await state.set_state(ReportStates.waiting_period)
     await message.answer(
-        "Введите период дат (включительно) в формате:\n"
+        "Введите период дат (включительно):\n"
         "• Один день: <code>2025-08-20</code>\n"
         "• Диапазон: <code>2025-08-01 2025-08-20</code>\n"
         "Для отмены: /cancel"
@@ -563,7 +609,7 @@ async def handle_report_period(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    parts = message.text.strip().split()
+    parts = (message.text or "").strip().split()
     if len(parts) == 1:
         d1 = parse_date(parts[0]); d2 = d1
     elif len(parts) == 2:
@@ -578,6 +624,7 @@ async def handle_report_period(message: Message, state: FSMContext):
     if d2 < d1:
         d1, d2 = d2, d1
 
+    # ограничение периода, чтобы отчёт не был огромным
     if (d2 - d1).days > 92:
         await message.answer("Слишком длинный период (>92 дней). Сократите интервал.")
         await state.clear()
@@ -604,6 +651,7 @@ async def handle_report_period(message: Message, state: FSMContext):
         await state.clear()
 
 # ================== СВОБОДНЫЙ ТЕКСТ (причины/комментарии) ==================
+
 @router.message()
 async def handle_comment_or_reason(message: Message):
     if not ensure_allowed(message): return
@@ -612,7 +660,7 @@ async def handle_comment_or_reason(message: Message):
     if not txt:
         return
 
-    # Если ждём причину — сохраняем приоритетно в start_reason/end_reason
+    # если ждём причину — сохраняем в start_reason/end_reason
     reason_flag = pending_reason.get(uid)
     if reason_flag:
         shift = shifts_by_date.get(today_key(), {}).get(uid)
@@ -629,7 +677,7 @@ async def handle_comment_or_reason(message: Message):
         save_shifts()
         return
 
-    # Иначе — это общий комментарий к текущей смене
+    # иначе — общий комментарий к текущей смене
     shift = shifts_by_date.get(today_key(), {}).get(uid)
     if not shift:
         return
@@ -643,12 +691,13 @@ async def handle_comment_or_reason(message: Message):
         save_shifts()
 
 # ================== ЗАПУСК ==================
+
 async def main():
     try:
         me = await bot.get_me()
         logging.info("Авторизован как @%s (id=%s)", me.username, me.id)
 
-        # Базовые команды (видны всем)
+        # базовые команды (видны всем)
         base_cmds = [
             BotCommand(command="start", description="Запуск бота"),
             BotCommand(command="whoami", description="Показать мою роль"),
@@ -656,20 +705,13 @@ async def main():
         ]
         await bot.set_my_commands(base_cmds, scope=BotCommandScopeDefault())
 
-        # Доп. команды только OWNER (видны только тебе в личке)
-        owner_cmds = base_cmds + [
-            BotCommand(command="emp_list", description="(OWNER) Список сотрудников"),
-            BotCommand(command="emp_add", description="(OWNER) Добавить сотрудника"),
-            BotCommand(command="emp_del", description="(OWNER) Удалить сотрудника"),
-            BotCommand(command="emp_reload", description="(OWNER) Перезагрузить справочник"),
-        ]
-        await bot.set_my_commands(owner_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
+        # тот же набор + owner-команды (если захочешь добавить slash-версии), пока не добавляю
+        await bot.set_my_commands(base_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
 
         await dp.start_polling(bot)
     except Exception as e:
         logging.exception("Старт не удался: %s", e)
     finally:
-        # Сохраним состояние смен на всякий случай
         try:
             save_shifts()
         finally:
