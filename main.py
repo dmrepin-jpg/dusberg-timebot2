@@ -16,7 +16,7 @@ from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMark
 from zoneinfo import ZoneInfo
 
 # ================== ЖЁСТКИЕ НАСТРОЙКИ ==================
-BOT_TOKEN = "PASTE_TELEGRAM_BOT_TOKEN_HERE"   # <— ВСТАВЬ СВОЙ ТОКЕН
+BOT_TOKEN = "8396016774:AAE09_ALathLnzkKHQf7AqbPL4_m39wgBlY"   # <— ВСТАВЬ СВОЙ ТОКЕН
 OWNER_ID  = 104653853
 ADMIN_IDS = [104653853, 1155243378]
 
