@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 API_TOKEN = '8369016774:AAE09_ALathLnzKdHQF7qAbpL4_mJ9wg8IY'
-ADMIN_IDS = [104653853]  # ID администратора
+ADMIN_IDS = [104653853]  # Telegram ID администратора
 
 data = {}
 
@@ -61,8 +61,10 @@ dp = Dispatcher()
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     load_data()
-    keyboard = get_keyboard(is_admin(message.from_user.id))
+    user_id = message.from_user.id
+    keyboard = get_keyboard(is_admin(user_id))
     await message.answer("Желаю продуктивного рабочего дня!", reply_markup=keyboard)
+    logger.info(f"User ID {user_id} started the bot")
 
 # Начало смены
 @dp.message(F.text == "Начал 🏭")
@@ -151,7 +153,7 @@ async def admin_status(message: Message):
 
     await message.answer("\n".join(text) if text else "Нет активных сотрудников.")
 
-# Отчёт в Excel
+# Отчет в Excel
 @dp.message(F.text == "Отчет 📈")
 async def send_report(message: Message):
     if not is_admin(message.from_user.id):
@@ -194,9 +196,14 @@ async def reset_data(message: Message):
     await message.answer("Данные сброшены.")
 
 # Неизвестная команда
-@dp.message()
+@dp.message(F.text)
 async def unknown_command(message: Message):
-    await message.answer("Неизвестная команда. Пожалуйста, используйте кнопки меню.")
+    known_texts = {
+        "Начал 🏭", "Закончил 🏡", "Мой статус",
+        "Инструкция", "Статус📍", "Отчет 📈", "Сбросить данные"
+    }
+    if message.text not in known_texts:
+        await message.answer("Неизвестная команда. Пожалуйста, используйте кнопки меню.")
 
 # Точка входа
 async def main():
