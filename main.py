@@ -91,6 +91,9 @@ def kb(uid: int) -> ReplyKeyboardMarkup:
 # shifts_by_date["YYYY-MM-DD"][user_id] = {...}
 shifts_by_date: Dict[str, Dict[int, Dict[str, Any]]] = defaultdict(dict)
 
+# Ожидание ввода причины: { user_id: "start_early"|"start_late"|"end_early"|"end_late" }
+pending_reason: Dict[int, str] = {}
+
 def today_key() -> str:
     return datetime.datetime.now(MSK).date().isoformat()
 
@@ -154,14 +157,18 @@ async def handle_start(message: Message):
     shift["end"] = None
     shift["start_reason"] = None
     shift["end_reason"] = None
-    shift["comment"] = None
+    # comment оставляем как есть (вводится отдельно при желании)
+    pending_reason.pop(uid, None)  # на всякий случай сбросим флажок
 
     t = now.time()
     if is_weekend(now.date()):
-        await message.answer("Сегодня выходной. Укажи причину начала смены:", reply_markup=kb(uid))
+        pending_reason[uid] = "start_early"  # классифицируем как причина начала
+        await message.answer("Сегодня выходной. Укажи причину начала смены (текстом):", reply_markup=kb(uid))
     elif t < PROMPT_EARLY_OK_FROM:
+        pending_reason[uid] = "start_early"
         await message.answer("Смена начата слишком рано. Укажи причину.", reply_markup=kb(uid))
     elif t > PROMPT_START_OK_TILL:
+        pending_reason[uid] = "start_late"
         await message.answer("Смена начата позже. Укажи причину.", reply_markup=kb(uid))
     else:
         await message.answer("Смена начата. Продуктивного дня!", reply_markup=kb(uid))
@@ -181,11 +188,14 @@ async def handle_end(message: Message):
         return
 
     shift["end"] = now
+    pending_reason.pop(uid, None)  # сбрасываем перед новой установкой
 
     t = now.time()
     if t < END_NORM:
+        pending_reason[uid] = "end_early"
         await message.answer("Смена завершена слишком рано. Укажи причину.", reply_markup=kb(uid))
     elif t > PROMPT_END_OK_TILL:
+        pending_reason[uid] = "end_late"
         await message.answer("Смена завершена позже. Укажи причину переработки.", reply_markup=kb(uid))
     else:
         await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
@@ -198,18 +208,27 @@ async def handle_status(message: Message):
     if not data:
         await message.answer("Смена не начата.", reply_markup=kb(uid))
         return
-    await message.answer(
-        f"Смена начата в: {fmt_hm(data.get('start'))}\n"
+
+    lines = [
+        f"Смена начата в: {fmt_hm(data.get('start'))}",
         f"Смена завершена в: {fmt_hm(data.get('end'))}",
-        reply_markup=kb(uid)
-    )
+    ]
+    if data.get("start_reason"):
+        lines.append(f"Причина начала: {data['start_reason']}")
+    if data.get("end_reason"):
+        lines.append(f"Причина завершения: {data['end_reason']}")
+    if data.get("comment"):
+        lines.append(f"Комментарий: {data['comment']}")
+
+    await message.answer("\n".join(lines), reply_markup=kb(uid))
 
 @router.message(F.text == "Инструкция")
 async def handle_help(message: Message):
     if not ensure_allowed(message): return
     await message.answer(
         "Для регистрации времени начала смены нажми «Смену начал 🏭». Для регистрации завершения — «Смену закончил 🏡».\n"
-        "В выходные и при отклонениях по времени — укажи причину по запросу.",
+        "Если бот спрашивает причину — ответь одним текстовым сообщением. Комментарий сохранится как причина отклонения по времени.\n"
+        "Любые дополнительные пояснения можно прислать отдельным сообщением — это будет общий комментарий.",
         reply_markup=kb(message.from_user.id)
     )
 
@@ -230,7 +249,14 @@ async def handle_shift_status(message: Message):
     for uid, data in day_data.items():
         s = fmt_hm(data.get("start"))
         e = fmt_hm(data.get("end"))
-        lines.append(f"{fio(uid)}: начата в {s}, завершена в {e}")
+        who = fio(uid)
+        suffix = []
+        if data.get("start_reason"):
+            suffix.append("причина начала есть")
+        if data.get("end_reason"):
+            suffix.append("причина завершения есть")
+        extra = f" ({', '.join(suffix)})" if suffix else ""
+        lines.append(f"{who}: начата в {s}, завершена в {e}{extra}")
     await message.answer("\n".join(lines), reply_markup=kb(message.from_user.id))
 
 # ================== ОТЧЁТ ПО ДИАПАЗОНУ (XLSX) ==================
@@ -254,7 +280,7 @@ def parse_date(s: str) -> datetime.date | None:
         return None
 
 def calc_minutes(a: datetime.time, b: datetime.time) -> int:
-    """b - a в минутах (оба локальные времени), может быть отрицательным."""
+    """b - a в минутах (оба локальные времена), может быть отрицательным."""
     dt_a = datetime.datetime.combine(datetime.date.today(), a)
     dt_b = datetime.datetime.combine(datetime.date.today(), b)
     return int((dt_b - dt_a).total_seconds() // 60)
@@ -264,18 +290,14 @@ def deviation_columns(start_dt: datetime.datetime | None, end_dt: datetime.datet
     early_start = late_start = early_end = late_end = 0
     if start_dt:
         st_local = start_dt.astimezone(MSK).time()
-        # раннее начало: 08:00 - фактическое, если фактическое раньше нормы
         if st_local < START_NORM:
             early_start = calc_minutes(st_local, START_NORM)
-        # позднее начало: фактическое - 08:10, если позже допустимого
         if st_local > START_OK_TILL:
             late_start = calc_minutes(START_OK_TILL, st_local)
     if end_dt:
         en_local = end_dt.astimezone(MSK).time()
-        # раннее завершение: 17:30 - фактическое, если фактическое раньше нормы
         if en_local < END_NORM:
             early_end = calc_minutes(en_local, END_NORM)
-        # позднее завершение: фактическое - 17:40, если позже допустимого
         if en_local > END_OK_TILL:
             late_end = calc_minutes(END_OK_TILL, en_local)
     return early_start, late_start, early_end, late_end
@@ -331,7 +353,7 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
         weekend = "Да" if is_weekend(day) else "Нет"
 
         for uid, data in day_data.items():
-            name = fio(uid)  # строго из справочника
+            name = fio(uid)
             start_dt: datetime.datetime | None = data.get("start")
             end_dt:   datetime.datetime | None = data.get("end")
 
@@ -379,6 +401,9 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     return bio.getvalue()
 
 # ======== FSM: просим период у админа по кнопке «Отчет 📈» ========
+class ReportStates(StatesGroup):
+    waiting_period = State()
+
 @router.message(F.text == "Отчет 📈")
 async def ask_report_period(message: Message, state: FSMContext):
     if not ensure_allowed(message): return
@@ -420,7 +445,7 @@ async def handle_report_period(message: Message, state: FSMContext):
     if d2 < d1:
         d1, d2 = d2, d1
 
-    # (необязательно) ограничим период до 92 дней, чтобы отчёты были лёгкими
+    # (необязательно) ограничим период до 92 дней
     if (d2 - d1).days > 92:
         await message.answer("Слишком длинный период (>92 дней). Сократите интервал.")
         await state.clear()
@@ -446,23 +471,41 @@ async def handle_report_period(message: Message, state: FSMContext):
     finally:
         await state.clear()
 
-# ================== СВОБОДНЫЙ ТЕКСТ (причины/коммент) ==================
+# ================== СВОБОДНЫЙ ТЕКСТ (причины/комментарии) ==================
 @router.message()
-async def handle_comment(message: Message):
+async def handle_comment_or_reason(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
-    data = shifts_by_date.get(today_key(), {}).get(uid)
-    if not data:
-        return
     txt = (message.text or "").strip()
     if not txt:
         return
-    if data.get("start") and not data.get("end") and not data.get("comment"):
-        data["comment"] = txt
-        await message.answer("Спасибо! Смена начата. Продуктивного дня!", reply_markup=kb(uid))
-    elif data.get("end") and not data.get("comment_done"):
-        data["comment_done"] = True
-        await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
+
+    # Если мы ждём причину — приоритетно сохраняем её
+    reason_flag = pending_reason.get(uid)
+    if reason_flag:
+        shift = shifts_by_date.get(today_key(), {}).get(uid)
+        if not shift:
+            pending_reason.pop(uid, None)
+            return
+        if reason_flag in ("start_early", "start_late"):
+            shift["start_reason"] = txt
+            await message.answer("Спасибо! Причина начала зафиксирована.", reply_markup=kb(uid))
+        elif reason_flag in ("end_early", "end_late"):
+            shift["end_reason"] = txt
+            await message.answer("Спасибо! Причина завершения зафиксирована.", reply_markup=kb(uid))
+        pending_reason.pop(uid, None)
+        return
+
+    # Иначе — это общий комментарий к текущей смене
+    shift = shifts_by_date.get(today_key(), {}).get(uid)
+    if not shift:
+        return
+    if shift.get("start") and not shift.get("end") and not shift.get("comment"):
+        shift["comment"] = txt
+        await message.answer("Комментарий сохранён. Продуктивного дня!", reply_markup=kb(uid))
+    elif shift.get("end") and not shift.get("comment_done"):
+        shift["comment_done"] = True
+        await message.answer("Комментарий получен. Хорошего отдыха!", reply_markup=kb(uid))
 
 # ================== ЗАПУСК ==================
 async def main():
