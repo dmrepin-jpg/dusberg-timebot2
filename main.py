@@ -43,9 +43,13 @@ if not BOT_TOKEN or ":" not in BOT_TOKEN:
 OWNER_ID  = 104653853
 ADMIN_IDS = [104653853, 1155243378]  # можно расширять
 
-# файлы данных
-EMP_FILE   = Path("employees.json")
-SHIFT_FILE = Path("shifts.json")
+# ===== Папка для постоянного хранилища =====
+DATA_DIR = Path("/data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# файлы данных (будут храниться в /data на Railway)
+EMP_FILE   = DATA_DIR / "employees.json"
+SHIFT_FILE = DATA_DIR / "shifts.json"
 
 # МСК
 MSK = ZoneInfo("Europe/Moscow")
