@@ -1,4 +1,3 @@
-# main.py
 import os
 import re
 import asyncio
@@ -14,22 +13,17 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import CommandStart, Command
 from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
 
-# ----- логирование включаем сразу
+# включаем логирование
 logging.basicConfig(level=logging.INFO)
 
-# ====================== ENV utils ======================
+# ============== utils: очистка ENV и парсинг ==============
 def clean_env_value(value: str | None) -> str:
     if not value:
         return ""
-    return (
-        value.replace("\u00A0", " ")  # NBSP -> space
-             .replace("\r", " ")
-             .replace("\n", " ")
-             .strip()
-             .strip('"')
-             .strip("'")
-             .strip()
-    )
+    return (value.replace("\u00A0", " ")
+                 .replace("\r", " ")
+                 .replace("\n", " ")
+                 .strip().strip('"').strip("'").strip())
 
 def parse_admin_ids(env_value: str | None) -> Set[int]:
     cleaned = clean_env_value(env_value)
@@ -47,7 +41,7 @@ def parse_admin_ids(env_value: str | None) -> Set[int]:
         out.add(int(m.group(0)))
     return out
 
-# ====================== ENV read (устойчивый) ======================
+# ============== читаем ENV (устойчиво) ==============
 RAW_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 RAW_OWNER_ID  = os.getenv("OWNER_ID", "")
 RAW_ADMIN_IDS = os.getenv("ADMIN_IDS", "")
@@ -67,27 +61,27 @@ if owner_clean:
     except ValueError:
         OWNER_ID = None
 
-# fallback: если OWNER_ID пуст, берём первого из ADMIN_IDS
+# ✅ не падаем: если OWNER_ID нет — берём первого из ADMIN_IDS, иначе запускаем без владельца
 if OWNER_ID is None:
     if ADMIN_IDS:
         OWNER_ID = sorted(ADMIN_IDS)[0]
         logging.warning("OWNER_ID не задан/не число. Использую первого из ADMIN_IDS: %s", OWNER_ID)
     else:
-        raise RuntimeError(
-            f"OWNER_ID не задан и ADMIN_IDS пуст. RAW_OWNER_ID={RAW_OWNER_ID!r}, RAW_ADMIN_IDS={RAW_ADMIN_IDS!r}"
-        )
+        OWNER_ID = 0  # владельца нет, можно выставить через /setowner
+        logging.error("OWNER_ID и ADMIN_IDS пусты. Бот запущен БЕЗ админов. "
+                      "Задай OWNER_ID в ENV или выполни /setowner.")
 
-# Диагностика ENV
+# диагностика
 logging.info("RAW OWNER_ID: %r | CLEAN: %r | USED: %s", RAW_OWNER_ID, owner_clean, OWNER_ID)
 logging.info("RAW ADMIN_IDS: %r | PARSED: %s", RAW_ADMIN_IDS, sorted(ADMIN_IDS))
 
-# ====================== Bot / DP ======================
+# ============== bot/dp/router ==============
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
-# ====================== Keyboards / roles ======================
+# ============== роли и клавиатуры ==============
 user_buttons = [
     [KeyboardButton(text="Начал 🏭"), KeyboardButton(text="Закончил 🏡")],
     [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
@@ -95,7 +89,7 @@ user_buttons = [
 admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
 
 def is_admin(user_id: int) -> bool:
-    return user_id == OWNER_ID or user_id in ADMIN_IDS
+    return (OWNER_ID != 0 and user_id == OWNER_ID) or (user_id in ADMIN_IDS)
 
 def kb(user_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -103,11 +97,11 @@ def kb(user_id: int) -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-# ====================== In-memory data ======================
+# ============== данные смен ==============
 shift_data: Dict[int, Dict[str, Any]] = {}
 
 def is_weekend(date: datetime.date) -> bool:
-    return calendar.weekday(date.year, date.month, date.day) >= 5  # 5-6 = Sat/Sun
+    return calendar.weekday(date.year, date.month, date.day) >= 5
 
 def format_status(user_id: int) -> str:
     data = shift_data.get(user_id)
@@ -122,7 +116,7 @@ def format_status(user_id: int) -> str:
     if data.get("end_reason"):   lines.append(f"Причина завершения: {data['end_reason']}")
     return "\n".join(lines)
 
-# ====================== Commands (service / owner) ======================
+# ============== команды сервиса/владельца ==============
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer("Добро пожаловать!", reply_markup=kb(message.from_user.id))
@@ -146,9 +140,9 @@ async def cmd_admins(message: Message):
     listed = ", ".join(map(str, sorted(ADMIN_IDS))) or "—"
     await message.answer(f"OWNER: <code>{OWNER_ID}</code>\nАдмины: <code>{listed}</code>", reply_markup=kb(message.from_user.id))
 
-@router.message(Command("admin_add"))
+@router.message(Command("admin_add")))
 async def cmd_admin_add(message: Message):
-    if message.from_user.id != OWNER_ID:
+    if message.from_user.id != OWNER_ID or OWNER_ID == 0:
         await message.answer("Только владелец может добавлять админов.", reply_markup=kb(message.from_user.id)); return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
@@ -166,13 +160,13 @@ async def cmd_admin_add(message: Message):
     await message.answer(
         f"Добавлен админ: <code>{new_id}</code>\n"
         f"Текущие админы: <code>{listed}</code>\n"
-        "⚠️ Сохрани это в Railway → ADMIN_IDS и Redeploy.",
+        "⚠️ Сохрани это значение в Railway → ADMIN_IDS и сделай Redeploy.",
         reply_markup=kb(message.from_user.id)
     )
 
 @router.message(Command("admin_remove"))
 async def cmd_admin_remove(message: Message):
-    if message.from_user.id != OWNER_ID:
+    if message.from_user.id != OWNER_ID or OWNER_ID == 0:
         await message.answer("Только владелец может удалять админов.", reply_markup=kb(message.from_user.id)); return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
@@ -191,8 +185,8 @@ async def cmd_admin_remove(message: Message):
 
 @router.message(Command("refresh"))
 async def cmd_refresh(message: Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer("Только владелец может обновлять список из ENV.", reply_markup=kb(message.from_user.id)); return
+    if message.from_user.id != OWNER_ID or OWNER_ID == 0:
+        await message.answer("Только владелец может перечитывать ADMIN_IDS из ENV.", reply_markup=kb(message.from_user.id)); return
     global ADMIN_IDS, RAW_ADMIN_IDS
     RAW_ADMIN_IDS = os.getenv("ADMIN_IDS", "")
     ADMIN_IDS = parse_admin_ids(RAW_ADMIN_IDS)
@@ -202,17 +196,21 @@ async def cmd_refresh(message: Message):
 @router.message(Command("setowner"))
 async def cmd_setowner(message: Message):
     """
-    /setowner <секрет> <id> — назначить владельца на лету (если OWNER_SECRET задан).
-    Нужен только если ENV внезапно не подхватился, но бот уже запущен.
+    /setowner <секрет> <id>  — если OWNER_SECRET задан;
+    /setowner <id>           — если владельца ещё нет (OWNER_ID==0 и секрета нет).
     """
     parts = message.text.split()
-    if len(parts) != 3:
-        await message.answer("Формат: /setowner <секрет> <id>", reply_markup=kb(message.from_user.id)); return
-    secret, id_str = parts[1], parts[2]
-    if not OWNER_SECRET:
-        await message.answer("OWNER_SECRET не задан в ENV.", reply_markup=kb(message.from_user.id)); return
-    if secret != OWNER_SECRET:
-        await message.answer("Неверный секрет.", reply_markup=kb(message.from_user.id)); return
+    if OWNER_SECRET:
+        if len(parts) != 3:
+            await message.answer("Формат: /setowner <секрет> <id>", reply_markup=kb(message.from_user.id)); return
+        secret, id_str = parts[1], parts[2]
+        if secret != OWNER_SECRET:
+            await message.answer("Неверный секрет.", reply_markup=kb(message.from_user.id)); return
+    else:
+        if OWNER_ID != 0 or len(parts) != 2:
+            await message.answer("Секрет не задан. Доступно: /setowner <id> — пока владелец не установлен.",
+                                 reply_markup=kb(message.from_user.id)); return
+        id_str = parts[1]
     try:
         new_owner = int(id_str)
     except ValueError:
@@ -221,11 +219,11 @@ async def cmd_setowner(message: Message):
     OWNER_ID = new_owner
     await message.answer(
         f"Владелец установлен: <code>{OWNER_ID}</code>\n"
-        f"Запиши его в Railway → OWNER_ID и Redeploy.",
+        f"Запиши его в Railway → OWNER_ID и сделай Redeploy.",
         reply_markup=kb(message.from_user.id)
     )
 
-# ====================== Business ======================
+# ============== бизнес-логика ==============
 @router.message(F.text == "Начал 🏭")
 async def handle_start(message: Message):
     uid = message.from_user.id
@@ -233,11 +231,8 @@ async def handle_start(message: Message):
     data = shift_data.setdefault(uid, {})
     if data.get("start") and not data.get("end"):
         await message.answer("Смена уже начата. Сначала заверши текущую.", reply_markup=kb(uid)); return
-    data.update({
-        "start": now, "end": None,
-        "start_reason": None, "end_reason": None,
-        "need_start_reason": False, "need_end_reason": False,
-    })
+    data.update({"start": now, "end": None, "start_reason": None, "end_reason": None,
+                 "need_start_reason": False, "need_end_reason": False})
     if is_weekend(now.date()):
         data["need_start_reason"] = True; txt = "Сегодня выходной. Укажи причину начала смены:"
     elif now.time() < datetime.time(8, 0):
@@ -260,7 +255,7 @@ async def handle_end(message: Message):
     data["end"] = now
     if now.time() < datetime.time(17, 30):
         data["need_end_reason"] = True; txt = "Раньше 17:30. Укажи причину раннего завершения:"
-    elif now.time() > datetime.time(17, 40):
+    elif now.time() > datetime.time(17:40):
         data["need_end_reason"] = True; txt = "Позже нормы. Укажи причину переработки:"
     else:
         data["need_end_reason"] = False; txt = "Спасибо! Хорошего отдыха!"
@@ -295,27 +290,23 @@ async def handle_shift_status(message: Message):
 async def handle_report(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("Нет доступа.", reply_markup=kb(message.from_user.id)); return
-    # TODO: сформировать и отправить реальный отчёт (CSV/Excel/текст)
     await message.answer("Формирование отчёта пока в разработке.", reply_markup=kb(message.from_user.id))
 
-# комментарии / причины (по запросу)
 @router.message(F.text)
 async def handle_comment(message: Message):
     uid = message.from_user.id
     data = shift_data.get(uid)
-    if not data:
-        return
+    if not data: return
     if data.get("need_start_reason") and not data.get("start_reason"):
         data["start_reason"] = message.text.strip()
         data["need_start_reason"] = False
-        await message.answer("Спасибо! Смена начата. Продуктивного дня!", reply_markup=kb(uid))
-        return
+        await message.answer("Спасибо! Смена начата. Продуктивного дня!", reply_markup=kb(uid)); return
     if data.get("need_end_reason") and not data.get("end_reason"):
         data["end_reason"] = message.text.strip()
         data["need_end_reason"] = False
         await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
 
-# ====================== Entry ======================
+# ============== entrypoint ==============
 async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="Запуск бота"),
@@ -324,7 +315,7 @@ async def main():
         BotCommand(command="admin_add", description="(OWNER) Добавить админа: /admin_add <id>"),
         BotCommand(command="admin_remove", description="(OWNER) Удалить админа: /admin_remove <id>"),
         BotCommand(command="refresh", description="(OWNER) Перечитать ADMIN_IDS из ENV"),
-        BotCommand(command="setowner", description="Назначить владельца: /setowner <секрет> <id>"),
+        BotCommand(command="setowner", description="Назначить владельца"),
     ])
     await dp.start_polling(bot)
 
