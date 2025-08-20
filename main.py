@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
 
 # ================== ЖЁСТКИЕ НАСТРОЙКИ ==================
-BOT_TOKEN = "PASTE_TELEGRAM_BOT_TOKEN_HERE"  # <-- ВСТАВЬ СВОЙ ТОКЕН
+BOT_TOKEN = "8369016774:AAE09_ALathLnzKdHQF7qAbpL4_mJ9wg8IY"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 OWNER_ID = 104653853                         # ты — владелец
 ADMIN_IDS = [104653853, 1155243378]          # список админов (включая тебя)
 
