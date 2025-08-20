@@ -23,29 +23,33 @@ data = {}
 def load_data():
     global data
     try:
-        with open('data.json', 'r') as f:
+        with open('data.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
     except FileNotFoundError:
         data = {}
 
 def save_data():
-    with open('data.json', 'w') as f:
+    with open('data.json', 'w', encoding='utf-8') as f:
         json.dump(data, f, default=str)
+
+def normalize_name(name):
+    import unicodedata
+    return unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('ASCII')
 
 def get_keyboard(is_admin=False):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.add(
-        KeyboardButton(text="Начал 🏭"),
-        KeyboardButton(text="Закончил 🏡")
+        KeyboardButton(text="Начал"),
+        KeyboardButton(text="Закончил")
     )
     keyboard.add(
         KeyboardButton(text="Мой статус"),
-        KeyboardButton(text="Инструкция 📖")
+        KeyboardButton(text="Инструкция")
     )
     if is_admin:
         keyboard.add(
-            KeyboardButton(text="Статус📍"),
-            KeyboardButton(text="Отчет 📈"),
+            KeyboardButton(text="Статус"),
+            KeyboardButton(text="Отчет"),
             KeyboardButton(text="Сбросить данные")
         )
     return keyboard
@@ -67,7 +71,7 @@ async def cmd_start(message: Message):
     keyboard = get_keyboard(is_admin(message.from_user.id))
     await message.answer("Желаю продуктивного рабочего дня!", reply_markup=keyboard)
 
-@dp.message(lambda message: message.text == "Начал 🏭")
+@dp.message(lambda message: message.text == "Начал")
 async def cmd_start_shift(message: Message):
     user_id = message.from_user.id
     now = datetime.now(pytz.timezone('Europe/Moscow'))
@@ -81,12 +85,15 @@ async def cmd_start_shift(message: Message):
         await message.answer(f"Смена уже начата в {start_time}")
         return
 
-    data[user_id] = {'start': now, 'name': message.from_user.full_name}
+    data[user_id] = {'start': now, 'name': normalize_name(message.from_user.full_name)}
     save_data()
     logger.info(f"User {user_id} started shift at {now}")
-    await message.answer("Смена успешно начата 🏭")
+    try:
+        await message.answer("Смена успешно начата")
+    except UnicodeEncodeError:
+        await message.answer("Ошибка при обработке текста. Попробуйте снова.")
 
-@dp.message(lambda message: message.text == "Закончил 🏡")
+@dp.message(lambda message: message.text == "Закончил")
 async def cmd_end_shift(message: Message):
     user_id = message.from_user.id
     now = datetime.now(pytz.timezone('Europe/Moscow'))
@@ -103,7 +110,10 @@ async def cmd_end_shift(message: Message):
     data[user_id]['end'] = now
     save_data()
     logger.info(f"User {user_id} ended shift at {now}")
-    await message.answer("Смена завершена 🏡")
+    try:
+        await message.answer("Смена завершена")
+    except UnicodeEncodeError:
+        await message.answer("Ошибка при обработке текста. Попробуйте снова.")
 
 @dp.message(lambda message: message.text == "Мой статус")
 async def cmd_status(message: Message):
@@ -115,23 +125,23 @@ async def cmd_status(message: Message):
     else:
         await message.answer("Вы на смене.")
 
-@dp.message(lambda message: message.text == "Инструкция 📖")
+@dp.message(lambda message: message.text == "Инструкция")
 async def cmd_instructions(message: Message):
     text = (
-        "📖 Инструкция\n\n"
+        "Инструкция\n\n"
         "Команды для сотрудников:\n"
-        "🏭 Кнопка \"Начал\" — начало смены\n"
-        "🏡 Кнопка \"Закончил\" — завершение смены\n"
-        "🔎 Кнопка \"Мой статус\" — текущий статус\n"
-        "📖 Кнопка \"Инструкция\" — данная инструкция\n\n"
+        "Начал — начало смены\n"
+        "Закончил — завершение смены\n"
+        "Мой статус — текущий статус\n"
+        "Инструкция — данная инструкция\n\n"
         "Команды для администратора:\n"
-        "📍 Кнопка \"Статус📍\" — список сотрудников на смене\n"
-        "📈 Кнопка \"Отчет\" — Excel-отчет о сменах\n"
-        "🗑 Кнопка \"Сбросить данные\" — очистка данных о сменах"
+        "Статус — список сотрудников на смене\n"
+        "Отчет — Excel-отчет о сменах\n"
+        "Сбросить данные — очистка данных о сменах"
     )
     await message.answer(text)
 
-@dp.message(lambda message: message.text == "Статус📍")
+@dp.message(lambda message: message.text == "Статус")
 async def cmd_admin_status(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("Недостаточно прав.")
@@ -139,19 +149,19 @@ async def cmd_admin_status(message: Message):
 
     result = []
     for user_id, shift in data.items():
-        name = shift.get('name', 'Неизвестно')
+        name = normalize_name(shift.get('name', 'Неизвестно'))
         if 'end' in shift:
-            status = f"✅ Завершил смену"
+            status = f"Завершил смену"
         elif 'start' in shift:
             time_str = shift['start'].strftime('%H:%M')
-            status = f"🟢 На смене с {time_str}"
+            status = f"На смене с {time_str}"
         else:
-            status = "⛔ Без статуса"
+            status = "Без статуса"
         result.append(f"{name}: {status}")
 
     await message.answer("\n".join(result) if result else "Нет данных по сотрудникам.")
 
-@dp.message(lambda message: message.text == "Отчет 📈")
+@dp.message(lambda message: message.text == "Отчет")
 async def cmd_admin_report(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("Недостаточно прав.")
@@ -160,7 +170,7 @@ async def cmd_admin_report(message: Message):
     rows = []
     for uid, info in data.items():
         rows.append({
-            'Сотрудник': info.get('name', ''),
+            'Сотрудник': normalize_name(info.get('name', '')),
             'Начало': info.get('start', '').strftime('%Y-%m-%d %H:%M') if 'start' in info else '',
             'Окончание': info.get('end', '').strftime('%Y-%m-%d %H:%M') if 'end' in info else ''
         })
