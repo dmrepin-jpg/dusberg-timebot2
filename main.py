@@ -489,10 +489,10 @@ async def handle_comment_or_reason(message: Message):
             return
         if reason_flag in ("start_early", "start_late"):
             shift["start_reason"] = txt
-            await message.answer("Спасибо! Причина начала зафиксирована.", reply_markup=kb(uid))
+            await message.answer("Спасибо! Причина зафиксирована. Продуктивного дня!", reply_markup=kb(uid))
         elif reason_flag in ("end_early", "end_late"):
             shift["end_reason"] = txt
-            await message.answer("Спасибо! Причина завершения зафиксирована.", reply_markup=kb(uid))
+            await message.answer("Спасибо! Причина зафиксирована. Хорошего отдыха!", reply_markup=kb(uid))
         pending_reason.pop(uid, None)
         return
 
