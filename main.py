@@ -1,10 +1,12 @@
 # main.py  (aiogram >= 3.7,<3.9)
 import os
 import io
+import json
 import asyncio
 import logging
 import datetime
 import calendar
+from pathlib import Path
 from collections import defaultdict
 from typing import Dict, Any, Iterable
 
@@ -18,8 +20,10 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     BufferedInputFile,
+    BotCommandScopeDefault,
+    BotCommandScopeChat,
 )
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from zoneinfo import ZoneInfo
@@ -40,15 +44,11 @@ if not BOT_TOKEN or ":" not in BOT_TOKEN:
 
 # Роли
 OWNER_ID  = 104653853
-ADMIN_IDS = [104653853, 1155243378]
+ADMIN_IDS = [104653853, 1155243378]  # можно расширять
 
-# Справочник сотрудников: ID -> ФИО
-EMPLOYEES: Dict[int, str] = {
-    104653853: "Репин Д.",
-    1155243378: "Казанов А.",
-    # добавляй здесь: 123456789: "Фамилия Имя Отчество",
-}
-ALLOWED_IDS = set(EMPLOYEES.keys()) | {OWNER_ID, *ADMIN_IDS}
+# Файлы данных
+EMP_FILE   = Path("employees.json")
+SHIFT_FILE = Path("shifts.json")
 
 # МСК
 MSK = ZoneInfo("Europe/Moscow")
@@ -71,34 +71,25 @@ dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
-# ================== КНОПКИ ==================
-user_buttons = [
-    [KeyboardButton(text="Смену начал 🏭"), KeyboardButton(text="Смену закончил 🏡")],
-    [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
-]
-admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
-
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS or uid == OWNER_ID
-
-def kb(uid: int) -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=admin_buttons if is_admin(uid) else user_buttons,
-        resize_keyboard=True
-    )
-
 # ================== ДАННЫЕ (ПО ДНЯМ, МСК) ==================
 # shifts_by_date["YYYY-MM-DD"][user_id] = {...}
 shifts_by_date: Dict[str, Dict[int, Dict[str, Any]]] = defaultdict(dict)
 
+# Справочник сотрудников: ID -> ФИО (из файла)
+DEFAULT_EMPLOYEES = {
+    str(OWNER_ID): "OWNER",
+}
+EMPLOYEES: Dict[int, str] = {}  # загрузим из файла ниже
+
 # Ожидание ввода причины: { user_id: "start_early"|"start_late"|"end_early"|"end_late" }
 pending_reason: Dict[int, str] = {}
 
-def today_key() -> str:
-    return datetime.datetime.now(MSK).date().isoformat()
-
+# ================== УТИЛИТЫ ==================
 def msk_now() -> datetime.datetime:
     return datetime.datetime.now(MSK)
+
+def today_key() -> str:
+    return msk_now().date().isoformat()
 
 def fmt_hm(dt: datetime.datetime | None) -> str:
     if not dt:
@@ -110,9 +101,18 @@ def fmt_hm(dt: datetime.datetime | None) -> str:
 def is_weekend(date: datetime.date) -> bool:
     return calendar.weekday(date.year, date.month, date.day) >= 5  # 5=Сб, 6=Вс
 
+def fio(uid: int) -> str:
+    return EMPLOYEES.get(uid, f"Неизвестный ({uid})")
+
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS or uid == OWNER_ID
+
+def is_allowed(uid: int) -> bool:
+    return uid == OWNER_ID or uid in ADMIN_IDS or uid in EMPLOYEES
+
 def ensure_allowed(message: Message) -> bool:
     uid = message.from_user.id
-    if uid not in ALLOWED_IDS:
+    if not is_allowed(uid):
         asyncio.create_task(message.answer("Нет доступа. Обратитесь к администратору."))
         return False
     return True
@@ -120,8 +120,82 @@ def ensure_allowed(message: Message) -> bool:
 def today_shift(uid: int) -> Dict[str, Any]:
     return shifts_by_date[today_key()].setdefault(uid, {})
 
-def fio(uid: int) -> str:
-    return EMPLOYEES.get(uid, f"Неизвестный ({uid})")
+# ================== I/O СПРАВОЧНИКА И СМЕН ==================
+def load_employees() -> dict[int, str]:
+    if EMP_FILE.exists():
+        try:
+            raw = json.loads(EMP_FILE.read_text("utf-8"))
+            return {int(k): str(v) for k, v in raw.items()}
+        except Exception as e:
+            logging.exception("Не удалось прочитать employees.json: %s", e)
+    # создаём по умолчанию
+    EMP_FILE.write_text(json.dumps(DEFAULT_EMPLOYEES, ensure_ascii=False, indent=2), "utf-8")
+    return {int(k): v for k, v in DEFAULT_EMPLOYEES.items()}
+
+def save_employees() -> None:
+    out = {str(k): v for k, v in EMPLOYEES.items()}
+    EMP_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
+
+def dt_to_iso(dt: datetime.datetime | None) -> str | None:
+    return dt.astimezone(MSK).isoformat() if dt else None
+
+def dt_from_iso(s: str | None) -> datetime.datetime | None:
+    if not s:
+        return None
+    return datetime.datetime.fromisoformat(s)  # tz-aware
+
+def save_shifts() -> None:
+    data_out: dict[str, dict[str, dict[str, Any]]] = {}
+    for day, users in shifts_by_date.items():
+        data_out[day] = {}
+        for uid, d in users.items():
+            data_out[day][str(uid)] = {
+                "start": dt_to_iso(d.get("start")),
+                "end": dt_to_iso(d.get("end")),
+                "start_reason": d.get("start_reason"),
+                "end_reason": d.get("end_reason"),
+                "comment": d.get("comment"),
+                "comment_done": d.get("comment_done"),
+            }
+    SHIFT_FILE.write_text(json.dumps(data_out, ensure_ascii=False, indent=2), "utf-8")
+
+def load_shifts() -> None:
+    if not SHIFT_FILE.exists():
+        return
+    try:
+        data_in = json.loads(SHIFT_FILE.read_text("utf-8"))
+    except Exception as e:
+        logging.exception("Не удалось прочитать shifts.json: %s", e)
+        return
+    for day, users in data_in.items():
+        shifts_by_date[day] = {}
+        for uid_str, d in users.items():
+            uid = int(uid_str)
+            shifts_by_date[day][uid] = {
+                "start": dt_from_iso(d.get("start")),
+                "end": dt_from_iso(d.get("end")),
+                "start_reason": d.get("start_reason"),
+                "end_reason": d.get("end_reason"),
+                "comment": d.get("comment"),
+                "comment_done": d.get("comment_done"),
+            }
+
+# Загрузим данные при старте процесса
+EMPLOYEES = load_employees()
+load_shifts()
+
+# ================== КНОПКИ ==================
+user_buttons = [
+    [KeyboardButton(text="Смену начал 🏭"), KeyboardButton(text="Смену закончил 🏡")],
+    [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
+]
+admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
+
+def kb(uid: int) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=admin_buttons if is_admin(uid) else user_buttons,
+        resize_keyboard=True
+    )
 
 # ================== КОМАНДЫ ==================
 @router.message(CommandStart())
@@ -141,6 +215,64 @@ async def cmd_whoami(message: Message):
         reply_markup=kb(uid)
     )
 
+# ----- OWNER-Команды управления справочником -----
+def owner_only(uid: int) -> bool:
+    return uid == OWNER_ID
+
+@router.message(Command("emp_list"))
+async def emp_list(message: Message):
+    if not owner_only(message.from_user.id):
+        return
+    if not EMPLOYEES:
+        return await message.answer("Справочник пуст.")
+    lines = [f"{uid}: {name}" for uid, name in sorted(EMPLOYEES.items(), key=lambda kv: kv[0])]
+    await message.answer("Сотрудники:\n" + "\n".join(lines))
+
+@router.message(Command("emp_add"))
+async def emp_add(message: Message, command: CommandObject):
+    if not owner_only(message.from_user.id):
+        return
+    text = (command.args or "").strip()
+    if not text:
+        return await message.answer('Формат: /emp_add <id> <ФИО в кавычках или без>')
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer('Нужно и ID, и ФИО. Пример: /emp_add 123 "Иванов И.И."')
+    try:
+        new_id = int(parts[0])
+    except ValueError:
+        return await message.answer("ID должен быть числом.")
+    name = parts[1].strip().strip('"').strip("'")
+    if not name:
+        return await message.answer("Пустое имя.")
+    EMPLOYEES[new_id] = name
+    save_employees()
+    await message.answer(f"Добавлен: {new_id} — {name}")
+
+@router.message(Command("emp_del"))
+async def emp_del(message: Message, command: CommandObject):
+    if not owner_only(message.from_user.id):
+        return
+    text = (command.args or "").strip()
+    if not text:
+        return await message.answer("Формат: /emp_del <id>")
+    try:
+        uid = int(text)
+    except ValueError:
+        return await message.answer("ID должен быть числом.")
+    if EMPLOYEES.pop(uid, None) is None:
+        return await message.answer("Такого ID нет в справочнике.")
+    save_employees()
+    await message.answer(f"Удалён: {uid}")
+
+@router.message(Command("emp_reload"))
+async def emp_reload(message: Message):
+    if not owner_only(message.from_user.id):
+        return
+    global EMPLOYEES
+    EMPLOYEES = load_employees()
+    await message.answer("Справочник перезагружен из файла.")
+
 # ================== БИЗНЕС-ЛОГИКА ==================
 @router.message(F.text == "Смену начал 🏭")
 async def handle_start(message: Message):
@@ -157,19 +289,20 @@ async def handle_start(message: Message):
     shift["end"] = None
     shift["start_reason"] = None
     shift["end_reason"] = None
-    # comment оставляем как есть (вводится отдельно при желании)
-    pending_reason.pop(uid, None)  # на всякий случай сбросим флажок
+    shift["comment"] = None
+    pending_reason.pop(uid, None)
+    save_shifts()
 
     t = now.time()
     if is_weekend(now.date()):
-        pending_reason[uid] = "start_early"  # классифицируем как причина начала
+        pending_reason[uid] = "start_early"
         await message.answer("Сегодня выходной. Укажи причину начала смены (текстом):", reply_markup=kb(uid))
     elif t < PROMPT_EARLY_OK_FROM:
         pending_reason[uid] = "start_early"
-        await message.answer("Смена начата слишком рано. Укажи причину.", reply_markup=kb(uid))
+        await message.answer("Смена начата слишком рано (до 07:45). Укажи причину (текстом):", reply_markup=kb(uid))
     elif t > PROMPT_START_OK_TILL:
         pending_reason[uid] = "start_late"
-        await message.answer("Смена начата позже. Укажи причину.", reply_markup=kb(uid))
+        await message.answer("Смена начата позже 08:10. Укажи причину опоздания (текстом):", reply_markup=kb(uid))
     else:
         await message.answer("Смена начата. Продуктивного дня!", reply_markup=kb(uid))
 
@@ -188,15 +321,16 @@ async def handle_end(message: Message):
         return
 
     shift["end"] = now
-    pending_reason.pop(uid, None)  # сбрасываем перед новой установкой
+    pending_reason.pop(uid, None)
+    save_shifts()
 
     t = now.time()
     if t < END_NORM:
         pending_reason[uid] = "end_early"
-        await message.answer("Смена завершена слишком рано. Укажи причину.", reply_markup=kb(uid))
+        await message.answer("Смена завершена слишком рано (до 17:30). Укажи причину (текстом):", reply_markup=kb(uid))
     elif t > PROMPT_END_OK_TILL:
         pending_reason[uid] = "end_late"
-        await message.answer("Смена завершена позже. Укажи причину переработки.", reply_markup=kb(uid))
+        await message.answer("Смена завершена позже 17:45. Укажи причину переработки (текстом):", reply_markup=kb(uid))
     else:
         await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
 
@@ -227,8 +361,8 @@ async def handle_help(message: Message):
     if not ensure_allowed(message): return
     await message.answer(
         "Для регистрации времени начала смены нажми «Смену начал 🏭». Для регистрации завершения — «Смену закончил 🏡».\n"
-        "Если бот спрашивает причину — ответь одним текстовым сообщением. Комментарий сохранится как причина отклонения по времени.\n"
-        "Любые дополнительные пояснения можно прислать отдельным сообщением — это будет общий комментарий.",
+        "Если бот спрашивает причину — ответь одним сообщением (текстом), это сохранится как причина начала/завершения.\n"
+        "Дополнительные пояснения можно прислать отдельным сообщением — это общий комментарий.",
         reply_markup=kb(message.from_user.id)
     )
 
@@ -280,7 +414,6 @@ def parse_date(s: str) -> datetime.date | None:
         return None
 
 def calc_minutes(a: datetime.time, b: datetime.time) -> int:
-    """b - a в минутах (оба локальные времена), может быть отрицательным."""
     dt_a = datetime.datetime.combine(datetime.date.today(), a)
     dt_b = datetime.datetime.combine(datetime.date.today(), b)
     return int((dt_b - dt_a).total_seconds() // 60)
@@ -343,7 +476,7 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     ws_params.append(["Норма начала","08:00"])
     ws_params.append(["Допустимо до (начало)","08:10"])
     ws_params.append(["Норма конца","17:30"])
-    ws_params.append(["Допустимо до (конец)","17:45"])
+    ws_params.append(["Допустимо до (конец)","17:40"])
     ws_params.append(["Период отчёта", f"{date_from.isoformat()} — {date_to.isoformat()}"])
 
     # ---- Данные
@@ -445,7 +578,6 @@ async def handle_report_period(message: Message, state: FSMContext):
     if d2 < d1:
         d1, d2 = d2, d1
 
-    # (необязательно) ограничим период до 92 дней
     if (d2 - d1).days > 92:
         await message.answer("Слишком длинный период (>92 дней). Сократите интервал.")
         await state.clear()
@@ -480,7 +612,7 @@ async def handle_comment_or_reason(message: Message):
     if not txt:
         return
 
-    # Если мы ждём причину — приоритетно сохраняем её
+    # Если ждём причину — сохраняем приоритетно в start_reason/end_reason
     reason_flag = pending_reason.get(uid)
     if reason_flag:
         shift = shifts_by_date.get(today_key(), {}).get(uid)
@@ -489,11 +621,12 @@ async def handle_comment_or_reason(message: Message):
             return
         if reason_flag in ("start_early", "start_late"):
             shift["start_reason"] = txt
-            await message.answer("Спасибо! Причина зафиксирована. Продуктивного дня!", reply_markup=kb(uid))
+            await message.answer("Спасибо! Причина начала зафиксирована.", reply_markup=kb(uid))
         elif reason_flag in ("end_early", "end_late"):
             shift["end_reason"] = txt
-            await message.answer("Спасибо! Причина зафиксирована. Хорошего отдыха!", reply_markup=kb(uid))
+            await message.answer("Спасибо! Причина завершения зафиксирована.", reply_markup=kb(uid))
         pending_reason.pop(uid, None)
+        save_shifts()
         return
 
     # Иначе — это общий комментарий к текущей смене
@@ -503,25 +636,44 @@ async def handle_comment_or_reason(message: Message):
     if shift.get("start") and not shift.get("end") and not shift.get("comment"):
         shift["comment"] = txt
         await message.answer("Комментарий сохранён. Продуктивного дня!", reply_markup=kb(uid))
+        save_shifts()
     elif shift.get("end") and not shift.get("comment_done"):
         shift["comment_done"] = True
         await message.answer("Комментарий получен. Хорошего отдыха!", reply_markup=kb(uid))
+        save_shifts()
 
 # ================== ЗАПУСК ==================
 async def main():
     try:
         me = await bot.get_me()
         logging.info("Авторизован как @%s (id=%s)", me.username, me.id)
-        await bot.set_my_commands([
+
+        # Базовые команды (видны всем)
+        base_cmds = [
             BotCommand(command="start", description="Запуск бота"),
             BotCommand(command="whoami", description="Показать мою роль"),
             BotCommand(command="cancel", description="Отменить ввод периода"),
-        ])
+        ]
+        await bot.set_my_commands(base_cmds, scope=BotCommandScopeDefault())
+
+        # Доп. команды только OWNER (видны только тебе в личке)
+        owner_cmds = base_cmds + [
+            BotCommand(command="emp_list", description="(OWNER) Список сотрудников"),
+            BotCommand(command="emp_add", description="(OWNER) Добавить сотрудника"),
+            BotCommand(command="emp_del", description="(OWNER) Удалить сотрудника"),
+            BotCommand(command="emp_reload", description="(OWNER) Перезагрузить справочник"),
+        ]
+        await bot.set_my_commands(owner_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
+
         await dp.start_polling(bot)
     except Exception as e:
         logging.exception("Старт не удался: %s", e)
-        await bot.session.close()
-        raise
+    finally:
+        # Сохраним состояние смен на всякий случай
+        try:
+            save_shifts()
+        finally:
+            await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
