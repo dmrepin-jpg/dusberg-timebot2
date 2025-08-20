@@ -194,6 +194,8 @@ async def cmd_refresh(message: Message):
 
 @router.message(Command("setowner"))
 async def cmd_setowner(message: Message):
+    global OWNER_ID   # ВАЖНО: объявлено до первого использования
+
     """
     /setowner <секрет> <id> — если OWNER_SECRET задан;
     /setowner <id>          — если владельца ещё нет (OWNER_ID==0 и секрета нет).
@@ -214,7 +216,7 @@ async def cmd_setowner(message: Message):
         new_owner = int(id_str)
     except ValueError:
         await message.answer("ID должен быть числом.", reply_markup=kb(message.from_user.id)); return
-    global OWNER_ID
+
     OWNER_ID = new_owner
     await message.answer(
         f"Владелец установлен: <code>{OWNER_ID}</code>\n"
