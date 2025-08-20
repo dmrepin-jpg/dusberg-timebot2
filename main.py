@@ -1,219 +1,206 @@
-# telegram_shift_bot/main.py
-import os
 import asyncio
+import logging
+import os
+import json
+import pandas as pd
 from datetime import datetime, time
 import pytz
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils import executor
-from openpyxl import Workbook, load_workbook
+from aiogram import Bot, Dispatcher
+from aiogram.filters import CommandStart
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types.input_file import FSInputFile
 
-# --- Константы ---
-ADMIN_ID = 123456789  # Замените на ваш Telegram user_id
-EXCEL_FILE = "shift_log.xlsx"
-TZ = pytz.timezone("Europe/Moscow")
-SHIFT_START = time(8, 0)
-SHIFT_END = time(17, 30)
-LATE_START = time(8, 10)
-LATE_END = time(17, 40)
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- Инициализация бота ---
-TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+API_TOKEN = '8369016774:AAE09_ALathLnzKdHQF7qAbpL4_mJ9wg8IY'
+ADMIN_IDS = [104653853]  # Ваш Telegram ID
 
-# --- Хранилище статуса ---
-user_shift_data = {}  # {user_id: {"start": datetime, "start_reason": str, "end": datetime, "end_reason": str}}
-registered_users = set()
+data = {}
 
-# --- Инициализация Excel ---
-if not os.path.exists(EXCEL_FILE):
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Дата", "Пользователь", "Начало", "Причина задержки", "Окончание", "Причина переработки/раннего завершения"])
-    wb.save(EXCEL_FILE)
+def load_data():
+    global data
+    try:
+        with open('data.json', 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
 
+def save_data():
+    with open('data.json', 'w') as f:
+        json.dump(data, f, default=str)
 
-# --- Меню ---
-user_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-user_kb.add("Начал \ud83d\udfdd", "Закончил\ud83c\udfe1")
-user_kb.add("Мой статус", "\ud83d\udcd6 Инструкция")
-
-admin_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-admin_kb.add("Начал \ud83d\udfdd", "Закончил\ud83c\udfe1")
-admin_kb.add("Мой статус", "\ud83d\udcd6 Инструкция")
-admin_kb.add("\ud83d\udcca Статус смены", "\ud83d\udcc8 Отчет")
-
-
-# --- Логирование ---
-def log_shift(user_name, date, start=None, start_reason="", end=None, end_reason=""):
-    wb = load_workbook(EXCEL_FILE)
-    ws = wb.active
-    ws.append([date, user_name, start, start_reason, end, end_reason])
-    wb.save(EXCEL_FILE)
-
-
-# --- Обработка сообщений ---
-@dp.message_handler(lambda m: m.text == "\ud83d\udcd6 Инструкция")
-async def show_instruction(message: types.Message):
-    await message.answer(
-        "\ud83d\udcd6 <b>Инструкция</b>\n\n"
-        "<b>Команды для сотрудников:</b>\n"
-        "\ud83d\udfdd <b>Начал</b> — запуск начала смены\n"
-        "\ud83c\udfe1 <b>Закончил</b> — завершение смены\n"
-        "<b>Мой статус</b> — текущий статус сотрудника\n"
-        "<b>Инструкция</b> — показать инструкцию\n\n"
-        "<b>Команды для администратора:</b>\n"
-        "\ud83d\udcca <b>Статус смены</b> — текстовый отчет по всем\n"
-        "\ud83d\udcc8 <b>Отчет</b> — Excel-файл со всеми данными",
-        parse_mode="HTML"
+def get_keyboard(is_admin=False):
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(
+        KeyboardButton(text="Начал 🏭"),
+        KeyboardButton(text="Закончил 🏡")
     )
-
-
-@dp.message_handler(lambda m: m.text == "Начал \ud83d\udfdd")
-async def handle_start(message: types.Message):
-    now = datetime.now(TZ)
-    user_id = message.from_user.id
-    user_name = message.from_user.full_name
-    registered_users.add((user_id, user_name))
-
-    if not (time(7, 0) <= now.time() <= LATE_END):
-        await message.answer("Сейчас нерабочее время. Начать смену можно с 07:00 до 17:40.")
-        return
-
-    shift = user_shift_data.get(user_id, {})
-    if shift.get("start"):
-        start_time = shift["start"].strftime("%H:%M")
-        await message.answer(f"Вы уже начали смену в {start_time}.")
-        return
-
-    user_shift_data[user_id] = {"start": now, "start_reason": "", "end": None, "end_reason": ""}
-    date_str = now.strftime("%Y-%m-%d")
-
-    if now.time() <= LATE_START:
-        log_shift(user_name, date_str, start=now.strftime("%H:%M"))
-        await message.answer("Смена начата. Желаю продуктивного рабочего дня!")
-    else:
-        await message.answer("Смена начата позже. Укажите причину задержки:")
-
-        @dp.message_handler(lambda m: m.from_user.id == user_id and not user_shift_data[user_id]["start_reason"])
-        async def get_late_reason(m: types.Message):
-            user_shift_data[user_id]["start_reason"] = m.text
-            log_shift(user_name, date_str, start=now.strftime("%H:%M"), start_reason=m.text)
-            await m.answer("Спасибо! Желаю продуктивного рабочего дня!")
-
-
-@dp.message_handler(lambda m: m.text == "Закончил\ud83c\udfe1")
-async def handle_end(message: types.Message):
-    now = datetime.now(TZ)
-    user_id = message.from_user.id
-    user_name = message.from_user.full_name
-    date_str = now.strftime("%Y-%m-%d")
-
-    shift = user_shift_data.get(user_id)
-    if not shift or not shift.get("start"):
-        await message.answer("Вы ещё не начали смену.")
-        return
-
-    if shift.get("end"):
-        end_time = shift["end"].strftime("%H:%M")
-        await message.answer(f"Смена уже завершена в {end_time}.")
-        return
-
-    def log_and_ack(reason=""):
-        shift["end"] = now
-        shift["end_reason"] = reason
-        log_shift(
-            user_name,
-            date_str,
-            start=shift["start"].strftime("%H:%M"),
-            start_reason=shift["start_reason"],
-            end=now.strftime("%H:%M"),
-            end_reason=reason,
+    keyboard.add(
+        KeyboardButton(text="Мой статус"),
+        KeyboardButton(text="Инструкция 📖")
+    )
+    if is_admin:
+        keyboard.add(
+            KeyboardButton(text="Статус📍"),
+            KeyboardButton(text="Отчет 📈"),
+            KeyboardButton(text="Сбросить данные")
         )
+    return keyboard
 
-    if now.time() < SHIFT_END:
-        await message.answer("Смена завершена раньше. Укажите причину:")
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
 
-        @dp.message_handler(lambda m: m.from_user.id == user_id)
-        async def early_reason(m: types.Message):
-            log_and_ack(m.text)
-            await m.answer("Спасибо! Желаю хорошего отдыха!")
+def within_working_hours():
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    now = datetime.now(moscow_tz).time()
+    return time(8, 0) <= now <= time(17, 30)
 
-    elif SHIFT_END <= now.time() <= LATE_END:
-        log_and_ack()
-        await message.answer("Смена завершена. Спасибо! Желаю хорошего отдыха!")
-    else:
-        await message.answer("Вы задержались. Укажите причину переработки или напишите 'ошибка':")
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 
-        @dp.message_handler(lambda m: m.from_user.id == user_id)
-        async def overtime_reason(m: types.Message):
-            log_and_ack(m.text)
-            await m.answer("Спасибо! Желаю хорошего отдыха!")
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    load_data()
+    keyboard = get_keyboard(is_admin(message.from_user.id))
+    await message.answer("Желаю продуктивного рабочего дня!", reply_markup=keyboard)
 
-
-@dp.message_handler(lambda m: m.text == "Мой статус")
-async def my_status(message: types.Message):
+@dp.message(lambda message: message.text == "Начал 🏭")
+async def cmd_start_shift(message: Message):
     user_id = message.from_user.id
-    shift = user_shift_data.get(user_id)
-    if not shift:
-        await message.answer("Вы ещё не начали смену.")
-    elif shift.get("end"):
+    now = datetime.now(pytz.timezone('Europe/Moscow'))
+
+    if not within_working_hours():
+        await message.answer("Сейчас нерабочее время. Смена начинается с 08:00 до 17:30 по МСК.")
+        return
+
+    if user_id in data and 'start' in data[user_id]:
+        start_time = data[user_id]['start'].strftime('%H:%M')
+        await message.answer(f"Смена уже начата в {start_time}")
+        return
+
+    data[user_id] = {'start': now, 'name': message.from_user.full_name}
+    save_data()
+    logger.info(f"User {user_id} started shift at {now}")
+    await message.answer("Смена успешно начата 🏭")
+
+@dp.message(lambda message: message.text == "Закончил 🏡")
+async def cmd_end_shift(message: Message):
+    user_id = message.from_user.id
+    now = datetime.now(pytz.timezone('Europe/Moscow'))
+
+    if user_id not in data or 'start' not in data[user_id]:
+        await message.answer("Смена ещё не начата.")
+        return
+
+    if 'end' in data[user_id]:
+        end_time = data[user_id]['end'].strftime('%H:%M')
+        await message.answer(f"Смена уже завершена в {end_time}")
+        return
+
+    data[user_id]['end'] = now
+    save_data()
+    logger.info(f"User {user_id} ended shift at {now}")
+    await message.answer("Смена завершена 🏡")
+
+@dp.message(lambda message: message.text == "Мой статус")
+async def cmd_status(message: Message):
+    user_id = message.from_user.id
+    if user_id not in data:
+        await message.answer("Вы ещё не начинали смену.")
+    elif 'end' in data[user_id]:
         await message.answer("Смена завершена.")
     else:
-        start = shift["start"].strftime("%H:%M")
-        await message.answer(f"Смена начата в {start}, ещё не завершена.")
+        await message.answer("Вы на смене.")
 
+@dp.message(lambda message: message.text == "Инструкция 📖")
+async def cmd_instructions(message: Message):
+    text = (
+        "📖 Инструкция\n\n"
+        "Команды для сотрудников:\n"
+        "🏭 Кнопка \"Начал\" — начало смены\n"
+        "🏡 Кнопка \"Закончил\" — завершение смены\n"
+        "🔎 Кнопка \"Мой статус\" — текущий статус\n"
+        "📖 Кнопка \"Инструкция\" — данная инструкция\n\n"
+        "Команды для администратора:\n"
+        "📍 Кнопка \"Статус📍\" — список сотрудников на смене\n"
+        "📈 Кнопка \"Отчет\" — Excel-отчет о сменах\n"
+        "🗑 Кнопка \"Сбросить данные\" — очистка данных о сменах"
+    )
+    await message.answer(text)
 
-@dp.message_handler(lambda m: m.text == "\ud83d\udcc8 Отчет")
-async def send_excel(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await message.answer_document(types.InputFile(EXCEL_FILE))
-    else:
-        await message.answer("У вас нет прав для просмотра отчета.")
-
-
-@dp.message_handler(lambda m: m.text == "\ud83d\udcca Статус смены")
-async def shift_status(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("У вас нет доступа к статусу смены.")
+@dp.message(lambda message: message.text == "Статус📍")
+async def cmd_admin_status(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Недостаточно прав.")
         return
 
-    report = []
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
-    for user_id, user_name in registered_users:
-        shift = user_shift_data.get(user_id)
-        if not shift:
-            report.append(f"{user_name}: \u274c Не на смене")
+    result = []
+    for user_id, shift in data.items():
+        name = shift.get('name', 'Неизвестно')
+        if 'end' in shift:
+            status = f"✅ Завершил смену"
+        elif 'start' in shift:
+            time_str = shift['start'].strftime('%H:%M')
+            status = f"🟢 На смене с {time_str}"
         else:
-            if shift.get("end"):
-                report.append(f"{user_name}: \u2705 Был на смене. Закончил в {shift['end'].strftime('%H:%M')}")
-            else:
-                report.append(f"{user_name}: \u2705 На смене с {shift['start'].strftime('%H:%M')}")
+            status = "⛔ Без статуса"
+        result.append(f"{name}: {status}")
 
-    await message.answer("\n".join(report))
+    await message.answer("\n".join(result) if result else "Нет данных по сотрудникам.")
 
+@dp.message(lambda message: message.text == "Отчет 📈")
+async def cmd_admin_report(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Недостаточно прав.")
+        return
 
-# --- Напоминания ---
-async def scheduler():
-    while True:
-        now = datetime.now(TZ)
-        if now.weekday() < 5:
-            if now.strftime("%H:%M") == SHIFT_START.strftime("%H:%M"):
-                await bot.send_message(ADMIN_ID, "Напоминание: нажмите \"Начал \ud83d\udfdd\" для начала смены")
-            elif now.strftime("%H:%M") == SHIFT_END.strftime("%H:%M"):
-                await bot.send_message(ADMIN_ID, "Напоминание: нажмите \"Закончил\ud83c\udfe1\" для завершения смены")
-        await asyncio.sleep(60)
+    rows = []
+    for uid, info in data.items():
+        rows.append({
+            'Сотрудник': info.get('name', ''),
+            'Начало': info.get('start', '').strftime('%Y-%m-%d %H:%M') if 'start' in info else '',
+            'Окончание': info.get('end', '').strftime('%Y-%m-%d %H:%M') if 'end' in info else ''
+        })
 
+    if not rows:
+        await message.answer("Нет данных для отчёта.")
+        return
 
-# --- Старт ---
-@dp.message_handler(commands=["start"])
-async def start_bot(message: types.Message):
-    kb = admin_kb if message.from_user.id == ADMIN_ID else user_kb
-    await message.answer("Добро пожаловать! Используйте кнопки ниже:", reply_markup=kb)
+    df = pd.DataFrame(rows)
+    file_name = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    df.to_excel(file_name, index=False)
 
+    try:
+        await bot.send_document(message.chat.id, FSInputFile(file_name))
+        logger.info(f"Report sent to admin {message.from_user.id}")
+    except TelegramBadRequest as e:
+        logger.error(f"Failed to send document: {e}")
+        await message.answer("Ошибка при отправке отчёта.")
+    finally:
+        if os.path.exists(file_name):
+            os.remove(file_name)
 
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(scheduler())
-    executor.start_polling(dp, skip_updates=True)
+@dp.message(lambda message: message.text == "Сбросить данные")
+async def cmd_reset_data(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("Недостаточно прав.")
+        return
+    global data
+    data = {}
+    save_data()
+    logger.info(f"Data reset by admin {message.from_user.id}")
+    await message.answer("Данные о сменах сброшены.")
+
+@dp.message()
+async def handle_unknown(message: Message):
+    await message.answer("Неизвестная команда. Используйте кнопки меню.")
+
+async def main():
+    load_data()
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    asyncio.run(main())
