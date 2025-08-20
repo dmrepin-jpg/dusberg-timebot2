@@ -732,11 +732,27 @@ async def handle_report_period(message: Message, state: FSMContext):
 # ================== DEBUG ==================
 from aiogram.filters import Command
 
+@router.message(Command("debug_touch"))
+async def debug_touch(message: Message):
+    # только OWNER может дергать отладку
+    if message.from_user.id != OWNER_ID:
+        return await message.answer("Нет доступа.")
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        EMP_FILE.write_text(f"debug employees at {now}\n", encoding="utf-8")
+        SHIFT_FILE.write_text(f"debug shifts at {now}\n", encoding="utf-8")
+        await message.answer("ok: wrote to /data")
+    except Exception as ex:
+        await message.answer(f"write error: {ex!r}")
+
 @router.message(Command("debug_files"))
 async def debug_files(message: Message):
+    # только OWNER может дергать отладку
+    if message.from_user.id != OWNER_ID:
+        return await message.answer("Нет доступа.")
     try:
-        e = EMP_FILE
-        s = SHIFT_FILE
+        e, s = EMP_FILE, SHIFT_FILE
         txt = (
             f"/data exists: {DATA_DIR.exists()}\n"
             f"{e.name}: exists={e.exists()} size={(e.stat().st_size if e.exists() else 0)} path={e}\n"
@@ -746,29 +762,23 @@ async def debug_files(message: Message):
     except Exception as ex:
         await message.answer(f"error: {ex!r}")
 
-@router.message(Command("debug_touch"))
-async def debug_touch(message: Message):
-    try:
-        now = datetime.datetime.now().isoformat(timespec="seconds")
-        EMP_FILE.write_text(f"debug employees at {now}\n", encoding="utf-8")
-        SHIFT_FILE.write_text(f"debug shifts at {now}\n", encoding="utf-8")
-        await message.answer("ok: wrote to /data")
-    except Exception as ex:
-        await message.answer(f"write error: {ex!r}")
 
 # ================== СВОБОДНЫЙ ТЕКСТ (причины/комментарии) ==================
-@router.message(~Command())
+@router.message(~Command())  # важно: не перехватываем команды со слешем
 async def handle_comment_or_reason(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
     txt = (message.text or "").strip()
-    if not txt: return
+    if not txt:
+        return
 
+    # если ждём причину — сохраняем и добавляем хвостовую фразу
     reason_flag = pending_reason.get(uid)
     if reason_flag:
         shift = shifts_by_date.get(today_key(), {}).get(uid)
         if not shift:
-            pending_reason.pop(uid, None); return
+            pending_reason.pop(uid, None)
+            return
 
         if reason_flag in ("start_early", "start_late"):
             shift["start_reason"] = txt
@@ -784,8 +794,10 @@ async def handle_comment_or_reason(message: Message):
         await message.answer("Спасибо! Причина зафиксирована." + tail, reply_markup=kb(uid))
         return
 
+    # иначе — это общий комментарий к смене
     shift = shifts_by_date.get(today_key(), {}).get(uid)
-    if not shift: return
+    if not shift:
+        return
     if shift.get("start") and not shift.get("end") and not shift.get("comment"):
         shift["comment"] = txt
         save_shifts()
@@ -794,6 +806,7 @@ async def handle_comment_or_reason(message: Message):
         shift["comment_done"] = True
         save_shifts()
         await message.answer("Комментарий сохранен. Хорошего отдыха!", reply_markup=kb(uid))
+
 
 # ================== ЗАПУСК ==================
 async def main():
@@ -805,6 +818,7 @@ async def main():
             BotCommand(command="start", description="Запуск бота"),
             BotCommand(command="whoami", description="Показать мою роль"),
             BotCommand(command="cancel", description="Отменить ввод периода"),
+            # debug-команды можно не публиковать в меню
         ]
         await bot.set_my_commands(base_cmds, scope=BotCommandScopeDefault())
         await bot.set_my_commands(base_cmds, scope=BotCommandScopeChat(chat_id=OWNER_ID))
@@ -817,6 +831,7 @@ async def main():
             save_shifts()
         finally:
             await bot.session.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
