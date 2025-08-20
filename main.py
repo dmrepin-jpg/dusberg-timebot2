@@ -44,8 +44,8 @@ ADMIN_IDS = [104653853, 1155243378]
 
 # Справочник сотрудников: ID -> ФИО
 EMPLOYEES: Dict[int, str] = {
-    104653853: "Иванов Иван Иванович",
-    1155243378: "Петров Пётр Петрович",
+    104653853: "Репин Д.",
+    1155243378: "Казанов А.",
     # добавляй здесь: 123456789: "Фамилия Имя Отчество",
 }
 ALLOWED_IDS = set(EMPLOYEES.keys()) | {OWNER_ID, *ADMIN_IDS}
@@ -53,11 +53,16 @@ ALLOWED_IDS = set(EMPLOYEES.keys()) | {OWNER_ID, *ADMIN_IDS}
 # МСК
 MSK = ZoneInfo("Europe/Moscow")
 
-# Нормативы (МСК)
-START_NORM = datetime.time(8, 0)
-START_OK_TILL = datetime.time(8, 10)
-END_NORM = datetime.time(17, 30)
-END_OK_TILL = datetime.time(17, 40)
+# ===== Нормативы для ОТЧЁТА (Excel) — НЕ МЕНЯЕМ =====
+START_NORM = datetime.time(8, 0)      # начало: норма
+START_OK_TILL = datetime.time(8, 10)  # начало: допустимо до
+END_NORM = datetime.time(17, 30)      # конец: норма
+END_OK_TILL = datetime.time(17, 40)   # конец: допустимо до
+
+# ===== Допуски ТОЛЬКО для вопросов в БОТЕ =====
+PROMPT_EARLY_OK_FROM = datetime.time(7, 45)  # начало до 07:45 — спросим причину
+PROMPT_START_OK_TILL = datetime.time(8, 10)  # после 08:10 — спросим причину
+PROMPT_END_OK_TILL   = datetime.time(17, 45) # после 17:45 — спросим причину
 
 # ================== ИНИЦИАЛИЗАЦИЯ ==================
 logging.basicConfig(level=logging.INFO)
@@ -68,7 +73,7 @@ dp.include_router(router)
 
 # ================== КНОПКИ ==================
 user_buttons = [
-    [KeyboardButton(text="Начал 🏭"), KeyboardButton(text="Закончил 🏡")],
+    [KeyboardButton(text="Смену начал 🏭"), KeyboardButton(text="Смену закончил 🏡")],
     [KeyboardButton(text="Мой статус"), KeyboardButton(text="Инструкция")],
 ]
 admin_buttons = user_buttons + [[KeyboardButton(text="Отчет 📈"), KeyboardButton(text="Статус смены")]]
@@ -119,7 +124,7 @@ def fio(uid: int) -> str:
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     if not ensure_allowed(message): return
-    await message.answer("Добро пожаловать!", reply_markup=kb(message.from_user.id))
+    await message.answer("Добро пожаловать в бот учёта рабочего времени DUSBERG!", reply_markup=kb(message.from_user.id))
 
 @router.message(Command("whoami"))
 async def cmd_whoami(message: Message):
@@ -134,7 +139,7 @@ async def cmd_whoami(message: Message):
     )
 
 # ================== БИЗНЕС-ЛОГИКА ==================
-@router.message(F.text == "Начал 🏭")
+@router.message(F.text == "Смену начал 🏭")
 async def handle_start(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
@@ -151,16 +156,17 @@ async def handle_start(message: Message):
     shift["end_reason"] = None
     shift["comment"] = None
 
+    t = now.time()
     if is_weekend(now.date()):
         await message.answer("Сегодня выходной. Укажи причину начала смены:", reply_markup=kb(uid))
-    elif now.time() < START_NORM:
-        await message.answer("Раньше 08:00. Укажи причину раннего начала:", reply_markup=kb(uid))
-    elif now.time() > START_OK_TILL:
-        await message.answer("Позже 08:10. Укажи причину опоздания:", reply_markup=kb(uid))
+    elif t < PROMPT_EARLY_OK_FROM:
+        await message.answer("Смена начата слишком рано. Укажи причину.", reply_markup=kb(uid))
+    elif t > PROMPT_START_OK_TILL:
+        await message.answer("Смена начата позже. Укажи причину.", reply_markup=kb(uid))
     else:
         await message.answer("Смена начата. Продуктивного дня!", reply_markup=kb(uid))
 
-@router.message(F.text == "Закончил 🏡")
+@router.message(F.text == "Смену закончил 🏡")
 async def handle_end(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
@@ -176,10 +182,11 @@ async def handle_end(message: Message):
 
     shift["end"] = now
 
-    if now.time() < END_NORM:
-        await message.answer("Раньше 17:30. Укажи причину раннего завершения:", reply_markup=kb(uid))
-    elif now.time() > END_OK_TILL:
-        await message.answer("Позже 17:40. Укажи причину переработки:", reply_markup=kb(uid))
+    t = now.time()
+    if t < END_NORM:
+        await message.answer("Смена завершена слишком рано. Укажи причину.", reply_markup=kb(uid))
+    elif t > PROMPT_END_OK_TILL:
+        await message.answer("Смена завершена позже. Укажи причину переработки.", reply_markup=kb(uid))
     else:
         await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
 
@@ -201,8 +208,8 @@ async def handle_status(message: Message):
 async def handle_help(message: Message):
     if not ensure_allowed(message): return
     await message.answer(
-        "Нажимай «Начал 🏭» в начале смены и «Закончил 🏡» по завершению.\n"
-        "В выходные/при отклонениях по времени — укажи причину по запросу.",
+        "Для регистрации времени начала смены нажми «Смену начал 🏭». Для регистрации завершения — «Смену закончил 🏡».\n"
+        "В выходные и при отклонениях по времени — укажи причину по запросу.",
         reply_markup=kb(message.from_user.id)
     )
 
@@ -253,28 +260,24 @@ def calc_minutes(a: datetime.time, b: datetime.time) -> int:
     return int((dt_b - dt_a).total_seconds() // 60)
 
 def deviation_columns(start_dt: datetime.datetime | None, end_dt: datetime.datetime | None) -> tuple[int,int,int,int]:
-    """(раньше_начало, позже_начало, раньше_конец, позже_конец) в минутах (>=0)"""
+    """(раньше_начало, позже_начало, раньше_конец, позже_конец) в минутах (>=0) — ДЛЯ ОТЧЁТА"""
     early_start = late_start = early_end = late_end = 0
     if start_dt:
         st_local = start_dt.astimezone(MSK).time()
-        # раннее начало: сколько минут до 08:00
+        # раннее начало: 08:00 - фактическое, если фактическое раньше нормы
         if st_local < START_NORM:
-            early_start = calc_minutes(st_local, START_NORM) * -1  # отрицательное → в плюс
-            early_start = max(0, early_start)
-        # позднее начало: сколько минут после 08:10
+            early_start = calc_minutes(st_local, START_NORM)
+        # позднее начало: фактическое - 08:10, если позже допустимого
         if st_local > START_OK_TILL:
             late_start = calc_minutes(START_OK_TILL, st_local)
-            late_start = max(0, late_start)
     if end_dt:
         en_local = end_dt.astimezone(MSK).time()
-        # раннее завершение: сколько минут до 17:30
+        # раннее завершение: 17:30 - фактическое, если фактическое раньше нормы
         if en_local < END_NORM:
-            early_end = calc_minutes(en_local, END_NORM) * -1
-            early_end = max(0, early_end)
-        # позднее завершение: сколько минут после 17:40
+            early_end = calc_minutes(en_local, END_NORM)
+        # позднее завершение: фактическое - 17:40, если позже допустимого
         if en_local > END_OK_TILL:
             late_end = calc_minutes(END_OK_TILL, en_local)
-            late_end = max(0, late_end)
     return early_start, late_start, early_end, late_end
 
 def minutes_between(start_dt: datetime.datetime | None, end_dt: datetime.datetime | None) -> int:
@@ -318,22 +321,20 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
     ws_params.append(["Норма начала","08:00"])
     ws_params.append(["Допустимо до (начало)","08:10"])
     ws_params.append(["Норма конца","17:30"])
-    ws_params.append(["Допустимо до (конец)","17:40"])
+    ws_params.append(["Допустимо до (конец)","17:45"])
+    ws_params.append(["Период отчёта", f"{date_from.isoformat()} — {date_to.isoformat()}"])
 
     # ---- Данные
-    # Собираем свод сразу по ходу (на случай если когда-то появятся несколько интервалов в день)
-    # Здесь у нас по дизайну одна запись в день на сотрудника.
     for day in daterange_inclusive(date_from, date_to):
         key = day.isoformat()
         day_data = shifts_by_date.get(key, {})
         weekend = "Да" if is_weekend(day) else "Нет"
 
         for uid, data in day_data.items():
-            name = EMPLOYEES.get(uid, "")
+            name = fio(uid)  # строго из справочника
             start_dt: datetime.datetime | None = data.get("start")
             end_dt:   datetime.datetime | None = data.get("end")
 
-            # Приводим к МСК и форматы
             start_str = fmt_hm(start_dt)
             end_str   = fmt_hm(end_dt)
 
@@ -373,7 +374,6 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
             cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="center")
 
-    # Сохраняем в память
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -417,11 +417,15 @@ async def handle_report_period(message: Message, state: FSMContext):
         await message.answer("Неверный формат. Пример: <code>2025-08-01 2025-08-20</code> или <code>2025-08-20</code>")
         return
 
-    # нормализуем порядок
     if d2 < d1:
         d1, d2 = d2, d1
 
-    # проверим, есть ли вообще данные в диапазоне
+    # (необязательно) ограничим период до 92 дней, чтобы отчёты были лёгкими
+    if (d2 - d1).days > 92:
+        await message.answer("Слишком длинный период (>92 дней). Сократите интервал.")
+        await state.clear()
+        return
+
     has_any = any(shifts_by_date.get(day.isoformat()) for day in daterange_inclusive(d1, d2))
     if not has_any:
         await message.answer("В указанном периоде нет данных.")
