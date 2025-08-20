@@ -1,5 +1,10 @@
-[service.web]
+# railway.toml
 
-[volumes.data]
+[services.web]
+# тут может быть твой startCommand, если нужно
+# startCommand = "python main.py"
+
+[[services.web.volumes]]
+name = "data"
 mountPath = "/data"
 sizeGB = 1
