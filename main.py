@@ -764,7 +764,9 @@ async def debug_files(message: Message):
 
 
 # ================== СВОБОДНЫЙ ТЕКСТ (причины/комментарии) ==================
-@router.message(~Command())  # важно: не перехватываем команды со слешем
+from aiogram import F
+
+@router.message(F.text & ~F.text.startswith("/"))
 async def handle_comment_or_reason(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
