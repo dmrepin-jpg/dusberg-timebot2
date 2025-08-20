@@ -1,4 +1,4 @@
-aiogram==3.3.0
+aiogram
 pandas
 openpyxl
-pytz
+apscheduler
