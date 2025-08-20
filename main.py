@@ -79,7 +79,8 @@ DEFAULT_EMPLOYEES = {
 EMPLOYEES: Dict[int, Dict[str, Any]] = {}
 
 # ожидаем причину (по пользователю)
-pending_reason: Dict[int, str] = {}  # "start_early"|"start_late"|"end_early"|"end_late"
+# "start_early"|"start_late"|"end_early"|"end_late"
+pending_reason: Dict[int, str] = {}
 
 # ================== УТИЛИТЫ ==================
 def msk_now() -> datetime.datetime:
@@ -266,14 +267,12 @@ async def owner_list(message: Message):
     if message.from_user.id != OWNER_ID: return
     if not EMPLOYEES:
         await message.answer("Справочник пуст.", reply_markup=owner_menu_kb); return
-    # сортируем по id
     lines = []
     for uid, meta in sorted(EMPLOYEES.items(), key=lambda kv: kv[0]):
         status = "🟢 активен" if meta.get("active", True) else "🔴 неактивен"
         lines.append(f"{uid}: {meta.get('name','')} — {status}")
     for i in range(0, len(lines), 50):
-        await message.answer("\n".join(lines[i:i+50]))
-    await message.answer("Готово.", reply_markup=owner_menu_kb)
+        await message.answer("\n".join(lines[i:i+50]), reply_markup=owner_menu_kb)
 
 @router.message(F.text == "❇️ Добавить сотрудника")
 async def owner_add_start(message: Message, state: FSMContext):
@@ -432,7 +431,8 @@ async def handle_end(message: Message):
     else:
         await message.answer("Спасибо! Хорошего отдыха!", reply_markup=kb(uid))
 
-@router.message(F.text == "Мой статус")
+# ================== ИНФО-КНОПКИ (с учётом эмодзи) ==================
+@router.message(F.text.in_({"Мой статус", "Мой статус📍"}))
 async def handle_status(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
@@ -446,25 +446,25 @@ async def handle_status(message: Message):
         f"Смена завершена в: {fmt_hm(data.get('end'))}",
     ]
     if data.get("start_reason"):
-        lines.append(f"Причина отклонения: {data['start_reason']}")
+        lines.append(f"Причина отклонения (начало): {data['start_reason']}")
     if data.get("end_reason"):
-        lines.append(f"Причина отклонения: {data['end_reason']}")
+        lines.append(f"Причина отклонения (завершение): {data['end_reason']}")
     if data.get("comment"):
         lines.append(f"Комментарий: {data['comment']}")
     await message.answer("\n".join(lines), reply_markup=kb(uid))
 
-@router.message(F.text == "Инструкция")
+@router.message(F.text.in_({"Инструкция", "Инструкция 📖"}))
 async def handle_help(message: Message):
     if not ensure_allowed(message): return
     await message.answer(
-        "Для регистрации времени начала смены нажми - Смену начал 🏭 \n" 
+        "Для регистрации времени начала смены нажми - Смену начал 🏭 \n"
         "Для регистрации времени завершения смены нажми - Смену закончил 🏡\n"
         "Если бот спрашивает причину — ответь одним текстовым сообщением - это сохранится как причина отклонения.\n"
         "Дополнительные пояснения по смене можно прислать отдельным сообщением — это общий комментарий.",
         reply_markup=kb(message.from_user.id)
     )
 
-@router.message(F.text == "Статус смены")
+@router.message(F.text.in_({"Статус смены", "Статус смены 🛠"}))
 async def handle_shift_status(message: Message):
     if not ensure_allowed(message): return
     if not is_admin(message.from_user.id):
@@ -485,7 +485,6 @@ async def handle_shift_status(message: Message):
 
         row = [f"{who}: начата в {s}, завершена в {e}"]
 
-        # Собираем причины отклонений (если есть)
         reasons = []
         if data.get("start_reason"):
             reasons.append(f"начало — {data['start_reason']}")
@@ -493,12 +492,10 @@ async def handle_shift_status(message: Message):
             reasons.append(f"завершение — {data['end_reason']}")
 
         if reasons:
-            row.append(f"⚠️ Причина отклонения: " + "; ".join(reasons))
+            row.append("⚠️ Причина отклонения: " + "; ".join(reasons))
 
-        # Блок по сотруднику
         lines.append("\n".join(row))
 
-    # Пустая строка между сотрудниками
     await message.answer("\n\n".join(lines), reply_markup=kb(message.from_user.id))
 
 # ================== ОТЧЁТ ПО ДИАПАЗОНУ (XLSX) ==================
@@ -643,7 +640,7 @@ def build_xlsx_bytes(date_from: datetime.date, date_to: datetime.date) -> bytes:
 class ReportStates(StatesGroup):
     waiting_period = State()
 
-@router.message(F.text == "Отчет 📈")
+@router.message(F.text.in_({"Отчет", "Отчет 📈"}))
 async def ask_report_period(message: Message, state: FSMContext):
     if not ensure_allowed(message): return
     if not is_admin(message.from_user.id):
@@ -686,7 +683,6 @@ async def handle_report_period(message: Message, state: FSMContext):
         await message.answer("Слишком длинный период (>92 дней). Сократите интервал.")
         await state.clear(); return
 
-    # Даже если в shifts нет данных, мы всё равно сформируем отчёт — строки будут пустыми.
     try:
         xlsx = build_xlsx_bytes(d1, d2)
         fname = f"Отчёт_{d1.isoformat()}_{d2.isoformat()}.xlsx" if d1 != d2 else f"Отчёт_{d1.isoformat()}.xlsx"
@@ -714,26 +710,31 @@ async def handle_comment_or_reason(message: Message):
         shift = shifts_by_date.get(today_key(), {}).get(uid)
         if not shift:
             pending_reason.pop(uid, None); return
+
         if reason_flag in ("start_early", "start_late"):
             shift["start_reason"] = txt
-            await message.answer("Спасибо! Причина зафиксирована.", reply_markup=kb(uid))
+            tail = " Продуктивного дня!"
         elif reason_flag in ("end_early", "end_late"):
             shift["end_reason"] = txt
-            await message.answer("Спасибо! Причина зафиксирована.", reply_markup=kb(uid))
+            tail = " Хорошего отдыха!"
+        else:
+            tail = ""
+
         pending_reason.pop(uid, None)
         save_shifts()
+        await message.answer("Спасибо! Причина зафиксирована." + tail, reply_markup=kb(uid))
         return
 
     shift = shifts_by_date.get(today_key(), {}).get(uid)
     if not shift: return
     if shift.get("start") and not shift.get("end") and not shift.get("comment"):
         shift["comment"] = txt
-        await message.answer("Комментарий сохранён. Продуктивного дня!", reply_markup=kb(uid))
         save_shifts()
+        await message.answer("Комментарий сохранён. Продуктивного дня!", reply_markup=kb(uid))
     elif shift.get("end") and not shift.get("comment_done"):
         shift["comment_done"] = True
-        await message.answer("Комментарий сохранен. Хорошего отдыха!", reply_markup=kb(uid))
         save_shifts()
+        await message.answer("Комментарий сохранен. Хорошего отдыха!", reply_markup=kb(uid))
 
 # ================== ЗАПУСК ==================
 async def main():
