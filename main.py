@@ -729,8 +729,35 @@ async def handle_report_period(message: Message, state: FSMContext):
     finally:
         await state.clear()
 
+# ================== DEBUG ==================
+from aiogram.filters import Command
+
+@router.message(Command("debug_files"))
+async def debug_files(message: Message):
+    try:
+        e = EMP_FILE
+        s = SHIFT_FILE
+        txt = (
+            f"/data exists: {DATA_DIR.exists()}\n"
+            f"{e.name}: exists={e.exists()} size={(e.stat().st_size if e.exists() else 0)} path={e}\n"
+            f"{s.name}: exists={s.exists()} size={(s.stat().st_size if s.exists() else 0)} path={s}\n"
+        )
+        await message.answer(txt)
+    except Exception as ex:
+        await message.answer(f"error: {ex!r}")
+
+@router.message(Command("debug_touch"))
+async def debug_touch(message: Message):
+    try:
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        EMP_FILE.write_text(f"debug employees at {now}\n", encoding="utf-8")
+        SHIFT_FILE.write_text(f"debug shifts at {now}\n", encoding="utf-8")
+        await message.answer("ok: wrote to /data")
+    except Exception as ex:
+        await message.answer(f"write error: {ex!r}")
+
 # ================== СВОБОДНЫЙ ТЕКСТ (причины/комментарии) ==================
-@router.message()
+@router.message(~Command())
 async def handle_comment_or_reason(message: Message):
     if not ensure_allowed(message): return
     uid = message.from_user.id
@@ -767,33 +794,6 @@ async def handle_comment_or_reason(message: Message):
         shift["comment_done"] = True
         save_shifts()
         await message.answer("Комментарий сохранен. Хорошего отдыха!", reply_markup=kb(uid))
-
-# ================== DEBUG ==================
-from aiogram.filters import Command
-
-@router.message(Command("debug_files"))
-async def debug_files(message: Message):
-    try:
-        e = EMP_FILE
-        s = SHIFT_FILE
-        txt = (
-            f"/data exists: {DATA_DIR.exists()}\n"
-            f"{e.name}: exists={e.exists()} size={(e.stat().st_size if e.exists() else 0)} path={e}\n"
-            f"{s.name}: exists={s.exists()} size={(s.stat().st_size if s.exists() else 0)} path={s}\n"
-        )
-        await message.answer(txt)
-    except Exception as ex:
-        await message.answer(f"error: {ex!r}")
-
-@router.message(Command("debug_touch"))
-async def debug_touch(message: Message):
-    try:
-        now = datetime.datetime.now().isoformat(timespec="seconds")
-        EMP_FILE.write_text(f"debug employees at {now}\n", encoding="utf-8")
-        SHIFT_FILE.write_text(f"debug shifts at {now}\n", encoding="utf-8")
-        await message.answer("ok: wrote to /data")
-    except Exception as ex:
-        await message.answer(f"write error: {ex!r}")
 
 # ================== ЗАПУСК ==================
 async def main():
