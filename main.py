@@ -42,7 +42,7 @@ if not BOT_TOKEN or ":" not in BOT_TOKEN:
     raise RuntimeError(f"BOT_TOKEN выглядит неверно. RAW={RAW_TOKEN!r}")
 
 OWNER_ID  = 104653853
-ADMIN_IDS = [104653853, 1155243378]  # можно расширять
+ADMIN_IDS = [104653853, 1155243378, 8471837261]  # можно расширять
 
 # ===== Папка для постоянного хранилища =====
 DATA_DIR = Path("/data")
